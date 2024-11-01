@@ -25,7 +25,6 @@ const DEFAULT_AD_DURATION: u64 = 10;
 
 const COMMAND_PREFIX: &str = "/command";
 const INTERSTITIAL_PLAYLIST: &str = "interstitials.m3u8";
-const MASTER_PLAYLIST: &str = "master.m3u8";
 
 const HLS_INTERSTITIAL_ID: &str = "_HLS_interstitial_id";
 const HLS_PRIMARY_ID: &str = "_HLS_primary_id";
@@ -58,16 +57,18 @@ struct AvailableAds {
 #[derive(clap::Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct CliArguments {
-    /// Proxy address(ip)
+    /// Proxy address (ip)
     listen_addr: String,
     /// Proxy port
     listen_port: u16,
-    /// Origin server address(ip)
+    /// Origin server address (ip)
     forward_addr: String,
     /// Origin server port
     forward_port: u16,
+    /// Path to the master playlist (test/master.m3u8)
+    master_playlist_path: String,
 
-    /// Ad server endpoint(protocol://ip:port/path)
+    /// Ad server endpoint (protocol://ip:port/path)
     /// It should be a VAST4.0/4.1 XML endpoint
     #[clap(verbatim_doc_comment)]
     ad_server_endpoint: String,
@@ -110,6 +111,7 @@ impl InsertionMode {
 struct ServerConfig {
     listen_url: Url,
     forward_url: Url,
+    master_playlist_path: String,
     insertion_mode: InsertionMode,
     ad_server_mode: AdServerMode,
 }
@@ -118,12 +120,14 @@ impl ServerConfig {
     fn new(
         listen_url: Url,
         forward_url: Url,
+        master_playlist_path: String,
         insertion_mode: InsertionMode,
         ad_server_mode: AdServerMode,
     ) -> Self {
         Self {
             listen_url,
             forward_url,
+            master_playlist_path,
             insertion_mode,
             ad_server_mode,
         }
@@ -181,9 +185,9 @@ impl InsertionCommand {
     }
 }
 
-fn get_request_type(req: &HttpRequest) -> RequestType {
+fn get_request_type(req: &HttpRequest, config: &web::Data<ServerConfig>) -> RequestType {
     let path = req.uri().path();
-    if path.contains(MASTER_PLAYLIST) {
+    if path.contains(config.master_playlist_path.as_str()) {
         return RequestType::MasterPlayList;
     } else if path.contains(".ts") || path.contains(".cmf") || path.contains(".mp") {
         return RequestType::Segment;
@@ -577,7 +581,7 @@ async fn handle_media_stream(
     config: web::Data<ServerConfig>,
     client: web::Data<Client>,
 ) -> Result<HttpResponse, Error> {
-    let request_type = get_request_type(&req);
+    let request_type = get_request_type(&req, &config);
 
     match request_type {
         RequestType::MasterPlayList => {
@@ -695,6 +699,7 @@ async fn main() -> io::Result<()> {
     let server_config = ServerConfig::new(
         listen_url,
         forward_url,
+        args.master_playlist_path,
         args.insertion_mode,
         args.ad_server_mode,
     );
