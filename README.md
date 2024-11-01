@@ -1,4 +1,4 @@
-# ad-proxy
+# Server-Guided Ad Proxy
 
 This application is a simple http proxy server that inserts ads into a video stream. It is designed to be used in conjunction with a video player (e.g., AVPlayer) that supports Server Guided Ad Insertion (SGAI). The proxy server intercepts the video stream from the origin server and inserts ads into the media playlist as interstitals at specifed timepoints.
 
@@ -9,7 +9,7 @@ This application is a simple http proxy server that inserts ads into a video str
 * An HLS streaming sever
 
 ```bash
-# Use ffmpeg to create a simple HLS stream
+# Use ffmpeg to create a simple HLS Live stream
 ffmpeg -y -re -i sintel_trailer-1080p.mp4 \
   -preset slow -g 48 -sc_threshold 0 \
   -map 0:0 -map 0:1 -map 0:0 -map 0:1 \
@@ -22,33 +22,79 @@ ffmpeg -y -re -i sintel_trailer-1080p.mp4 \
   -hls_segment_filename "v%v/fileSequence%d.ts" \
   v%v/prog_index.m3u8
 
-# Serve the HLS stream using a simple http server
+# Serve the HLS Live stream using a simple http server
 python -m http.server 8001
+
+# Now you can access the HLS stream at http://127.0.0.1:8001/master.m3u8
 ```
 
 * A running instance of the [test-ad-server](https://github.com/Eyevinn/test-adserver)
 
+```bash
+# Start the test ad server on port 8000
+export PORT=8000
+
+npm install
+npm start
+
+# Now you can access the test ad server at http://127.0.0.1:8000/api/docs
+```
+
 * AvPlayer or any other video player that supports Server Guided Ad Insertion (SGAI)
+
+```bash
+# Once the ad-proxy server is running (e.g., on port 3333), 
+# you can use AVPlayer to play the HLS stream
+```
 
 ### Run
 
 ```bash
-# Start the ad-proxy server
-Usage: ad_proxy [OPTIONS] <LISTEN_ADDR> <LISTEN_PORT> <FORWARD_ADDR> <FORWARD_PORT>
+# Start the ad-proxy server on port 3333 with origin server on port 8001 and test ad server on port 8000
+# Use dynamic mode to insert ads into the HLS Live stream at specified timepoints
+cargo run --bin ad_proxy 127.0.0.1 3333 127.0.0.1 8001 http://localhost:8000/api/v1/vast -i dynamic
+
+# Now you can access the HLS Live stream at http://127.0.0.1:3333/master.m3u8
+```
+
+For more options, run `ad_proxy --help`
+
+```bash
+Usage: ad_proxy [OPTIONS] <LISTEN_ADDR> <LISTEN_PORT> <FORWARD_ADDR> <FORWARD_PORT> <AD_SERVER_ENDPOINT>
 
 Arguments:
   <LISTEN_ADDR>   Proxy address(ip)
   <LISTEN_PORT>   Proxy port
   <FORWARD_ADDR>  Origin server address(ip)
   <FORWARD_PORT>  Origin server port
+  <AD_SERVER_ENDPOINT>  Origin server endpoint(protocol://ip:port/path)
 
 Options:
-  -m, --mode <MODE>  Ad insertion mode to use:
-    1) static  - add intertistial every 20 seconds.
+  -a, --ad-server-mode <AD_SERVER_MODE>
+    Ad server to use:
+    1) default  - use default test ad server
+    2) advanced - use custom ad server [default: default] [possible values: default, advanced]
+  -i, --insertion-mode <INSERTION_MODE>
+    Ad insertion mode to use:
+    1) static  - add intertistial every 30 seconds (10 in total).
     2) dynamic - add intertistial when requested (Live Content only). [default: static] [possible values: static, dynamic]
 ```
 
-### Example Media Playlist
+### Insert Ads
+
+One can insert ads into the video stream by sending a GET request to the ad-proxy server with the following query parameters:
+
+* in - the time in seconds when the ad break should be inserted
+* duration - the duration of the ad break in seconds
+* pod_num - the number of creatives in this ad break
+
+For example, to insert an ad break at 5 seconds from the live-edge with a duration of 10 seconds and 2 creatives, one would send the following request:
+
+```bash
+curl http://127.0.0.1:3333/command?in=5&dur=10&pod=2
+```
+
+### Example Modified Media Playlist
 
 ```m3u8
 #EXTM3U

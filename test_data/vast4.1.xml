@@ -1,0 +1,89 @@
+<VAST version="4.1">
+  <Ad id="bumper_start-tjrnskymning-4" sequence="0">
+    <InLine>
+      <AdSystem>trailer-proxy</AdSystem>
+      <AdTitle>bumper_start</AdTitle>
+      <Impression id="bumper"><![CDATA[https://trailer-impressions.a2d.tv/trailer/64d11e635b55ad002b488ae5?Operator=telia&Device=b0e2cd4d-d21e-4251-b3e8-4ffad25834ea&Stream=live&impressionCtr=5&b=start&contentId=]]></Impression>
+      <Impression id="breakStart"><![CDATA[https://80276.v.fwmrm.net/ad/l/1?s=l0cd5&n=524918%3B524918%3B512166%3B512167%3B512188%3B516869%3B517250%3B517327%3B517424%3B518308%3B529333&t=1730450887157789897&f=524288&cn=slotImpression&et=i&tpos=0&init=1&slid=0]]></Impression>
+      <Creatives>
+        <Creative id="105a434b0cb139d04d7f1c5593fb7bae" adId="default-trailer-admin">
+          <UniversalAdId idRegistry="empty">105a434b0cb139d04d7f1c5593fb7bae</UniversalAdId>
+          <Linear>
+            <Duration>00:00:03.000</Duration>
+            <MediaFiles>
+              <MediaFile bitrate="3200" delivery="progressive" height="720" type="video/mp4" width="1280" scalable="true"><![CDATA[https://vod.streaming.a2d.tv/promotions/trailers/64d11e635b55ad002b488ae5_4_RV3_TJ_RNBRON_SKYMNING_2023_P8_mp4]]></MediaFile>
+            </MediaFiles>
+          </Linear>
+        </Creative>
+      </Creatives>
+      <Extensions>
+        <Extension type="AdServer" name="trailer-proxy">
+          <SSAICreativeId creativeId="105a434b0cb139d04d7f1c5593fb7bae">105a434b0cb139d04d7f1c5593fb7bae</SSAICreativeId>
+          <CreativeParameters name="AdType" type="Linear" creativeId="105a434b0cb139d04d7f1c5593fb7bae">
+            <CreativeParameter name="AdType" type="Linear" creativeId="105a434b0cb139d04d7f1c5593fb7bae">bumper</CreativeParameter>
+          </CreativeParameters>
+        </Extension>
+      </Extensions>
+    </InLine>
+  </Ad>
+  <Ad id="80763981.139982310335872" sequence="1">
+    <InLine>
+      <AdSystem>FreeWheel</AdSystem>
+      <AdTitle>Alla 35-54</AdTitle>
+      <Error><![CDATA[https://80276.v.fwmrm.net/ad/l/1?s=l0cd5&n=524918%3B524918%3B512166%3B512167%3B512188%3B516869%3B517250%3B517327%3B517424%3B518308%3B529333&t=1730450887157789897&f=201850880&r=524918&adid=80763981&reid=744541698&arid=0&iw=&uxnw=&uxss=&uxct=&et=e&cn=[ERRORCODE]]]></Error>
+      <Impression id="FWi_80763981.0"><![CDATA[https://80276.v.fwmrm.net/ad/l/1?s=l0cd5&n=524918%3B524918%3B512166%3B512167%3B512188%3B516869%3B517250%3B517327%3B517424%3B518308%3B529333&t=1730450887157789897&f=201850880&r=524918&adid=80763981&reid=744541698&arid=0&auid=&cn=defaultImpression&et=i&_cc=80763981,744541698,,,1730450887,1&tpos=0&iw=&uxnw=&uxss=&uxct=&metr=1031&init=1&asid=392964973&ssid=17410413&vcid2=bf60d0eb-9f7b-47cb-881d-635244d35315]]></Impression>
+      <Creatives>
+        <Creative id="190062646" adId="80763981">
+          <UniversalAdId idRegistry="MMS">E1SPKO100U</UniversalAdId>
+          <Linear>
+            <Duration>00:00:10</Duration>
+            <TrackingEvents>
+              <Tracking event="complete"><![CDATA[https://80276.v.fwmrm.net/ad/l/1?s=l0cd5&n=524918%3B524918%3B512166%3B512167%3B512188%3B516869%3B517250%3B517327%3B517424%3B518308%3B529333&t=1730450887157789897&f=201850880&r=524918&adid=80763981&reid=744541698&arid=0&auid=&cn=complete&et=i&_cc=&tpos=0&init=1&iw=&uxnw=&uxss=&uxct=&metr=1031]]></Tracking>
+              <Tracking event="firstQuartile"><![CDATA[https://80276.v.fwmrm.net/ad/l/1?s=l0cd5&n=524918%3B524918%3B512166%3B512167%3B512188%3B516869%3B517250%3B517327%3B517424%3B518308%3B529333&t=1730450887157789897&f=201850880&r=524918&adid=80763981&reid=744541698&arid=0&auid=&cn=firstQuartile&et=i&_cc=&tpos=0&init=1&iw=&uxnw=&uxss=&uxct=&metr=1031]]></Tracking>
+              <Tracking event="midpoint"><![CDATA[https://80276.v.fwmrm.net/ad/l/1?s=l0cd5&n=524918%3B524918%3B512166%3B512167%3B512188%3B516869%3B517250%3B517327%3B517424%3B518308%3B529333&t=1730450887157789897&f=201850880&r=524918&adid=80763981&reid=744541698&arid=0&auid=&cn=midPoint&et=i&_cc=&tpos=0&init=1&iw=&uxnw=&uxss=&uxct=&metr=1031]]></Tracking>
+              <Tracking event="thirdQuartile"><![CDATA[https://80276.v.fwmrm.net/ad/l/1?s=l0cd5&n=524918%3B524918%3B512166%3B512167%3B512188%3B516869%3B517250%3B517327%3B517424%3B518308%3B529333&t=1730450887157789897&f=201850880&r=524918&adid=80763981&reid=744541698&arid=0&auid=&cn=thirdQuartile&et=i&_cc=&tpos=0&init=1&iw=&uxnw=&uxss=&uxct=&metr=1031]]></Tracking>
+            </TrackingEvents>
+            <VideoClicks>
+              <ClickTracking id="FWc_80763981.0"><![CDATA[https://80276.v.fwmrm.net/ad/l/1?s=l0cd5&n=524918%3B524918%3B512166%3B512167%3B512188%3B516869%3B517250%3B517327%3B517424%3B518308%3B529333&t=1730450887157789897&f=201850880&r=524918&adid=80763981&reid=744541698&arid=0&auid=&cn=defaultClick&et=c&_cc=&tpos=0]]></ClickTracking>
+            </VideoClicks>
+            <MediaFiles>
+              <MediaFile bitrate="6500" delivery="progressive" height="1080" id="744541698" type="video/mp4" width="1920"><![CDATA[https://tvm-tv4-freewheel.akamaized.net/m/1/524918/54/190062646/6JTDhk_14258569_981.mp4]]></MediaFile>
+            </MediaFiles>
+          </Linear>
+        </Creative>
+      </Creatives>
+      <Extensions>
+        <Extension type="FreeWheel">
+          <SSAICreativeId creativeId="190062646">E1SPKO100U</SSAICreativeId>
+        </Extension>
+      </Extensions>
+    </InLine>
+  </Ad>
+  <Ad id="bumper_end-tjrnskymning-4" sequence="2">
+    <InLine>
+      <AdSystem>trailer-proxy</AdSystem>
+      <AdTitle>bumper_end</AdTitle>
+      <Impression id="bumper"><![CDATA[https://trailer-impressions.a2d.tv/trailer/64d11ef43720cd002b9387b5?Operator=telia&Device=b0e2cd4d-d21e-4251-b3e8-4ffad25834ea&Stream=live&impressionCtr=6&b=end&contentId=]]></Impression>
+      <Impression id="breakEnd"><![CDATA[https://80276.v.fwmrm.net/ad/l/1?s=l0cd5&n=524918%3B524918%3B512166%3B512167%3B512188%3B516869%3B517250%3B517327%3B517424%3B518308%3B529333&t=1730450887157789897&f=524288&cn=videoView&et=i&uxnw=&uxss=&uxct=&init=1&vcid2=bf60d0eb-9f7b-47cb-881d-635244d35315]]></Impression>
+      <Creatives>
+        <Creative id="2e4469bf213ce693cf320cdcddf53fe6" adId="default-trailer-admin">
+          <UniversalAdId idRegistry="empty">2e4469bf213ce693cf320cdcddf53fe6</UniversalAdId>
+          <Linear>
+            <Duration>00:00:03.000</Duration>
+            <MediaFiles>
+              <MediaFile bitrate="3200" delivery="progressive" height="720" type="video/mp4" width="1280" scalable="true"><![CDATA[https://vod.streaming.a2d.tv/promotions/trailers/64d11ef43720cd002b9387b5_4_HV3_TJ_RNBRON_SKYMNING_2023_P8_mp4]]></MediaFile>
+            </MediaFiles>
+          </Linear>
+        </Creative>
+      </Creatives>
+      <Extensions>
+        <Extension type="AdServer" name="trailer-proxy">
+          <SSAICreativeId creativeId="2e4469bf213ce693cf320cdcddf53fe6">2e4469bf213ce693cf320cdcddf53fe6</SSAICreativeId>
+          <CreativeParameters name="AdType" type="Linear" creativeId="2e4469bf213ce693cf320cdcddf53fe6">
+            <CreativeParameter name="AdType" type="Linear" creativeId="2e4469bf213ce693cf320cdcddf53fe6">bumper</CreativeParameter>
+          </CreativeParameters>
+        </Extension>
+      </Extensions>
+    </InLine>
+  </Ad>
+</VAST>

@@ -4,7 +4,7 @@ use utils::*;
 use actix_web::{
     dev::PeerAddr, error, middleware, web, App, Error, HttpRequest, HttpResponse, HttpServer,
 };
-use awc::Client;
+use awc::{http::header, Client, Connector};
 use clap::{Parser, ValueEnum};
 use dashmap::{DashMap, DashSet};
 use hls_m3u8::tags::ExtXDateRange;
@@ -20,7 +20,8 @@ use std::time::Duration;
 use url::Url;
 use uuid::Uuid;
 
-const TEST_AD_SERVER_URL: &str = "http://localhost:8000/api/v1/vast";
+const BUMPER_DURATION: u64 = 6;
+const DEFAULT_AD_DURATION: u64 = 10;
 
 const COMMAND_PREFIX: &str = "/command";
 const INTERSTITIAL_PLAYLIST: &str = "interstitials.m3u8";
@@ -66,11 +67,26 @@ struct CliArguments {
     /// Origin server port
     forward_port: u16,
 
+    /// Origin server endpoint(protocol://ip:port/path)
+    ad_server_endpoint: String,
+
+    /// Ad server to use:
+    /// 1) default  - use default test ad server
+    /// 2) advanced - use custom ad server
+    #[clap(short, long, value_enum, verbatim_doc_comment, default_value_t = AdServerMode::Default)]
+    ad_server_mode: AdServerMode,
+
     /// Ad insertion mode to use:
-    /// 1) static  - add intertistial every 20 seconds.
+    /// 1) static  - add intertistial every 30 seconds (10 in total).
     /// 2) dynamic - add intertistial when requested (Live Content only).
     #[clap(short, long, value_enum, verbatim_doc_comment, default_value_t = InsertionMode::Static)]
-    mode: InsertionMode,
+    insertion_mode: InsertionMode,
+}
+
+#[derive(ValueEnum, Clone, Debug, PartialEq)]
+pub enum AdServerMode {
+    Default,
+    Advanced,
 }
 
 #[derive(ValueEnum, Clone, Debug, PartialEq)]
@@ -92,15 +108,22 @@ impl InsertionMode {
 struct ServerConfig {
     listen_url: Url,
     forward_url: Url,
-    mode: InsertionMode,
+    insertion_mode: InsertionMode,
+    ad_server_mode: AdServerMode,
 }
 
 impl ServerConfig {
-    fn new(listen_url: Url, forward_url: Url, mode: InsertionMode) -> Self {
+    fn new(
+        listen_url: Url,
+        forward_url: Url,
+        insertion_mode: InsertionMode,
+        ad_server_mode: AdServerMode,
+    ) -> Self {
         Self {
             listen_url,
             forward_url,
-            mode,
+            insertion_mode,
+            ad_server_mode,
         }
     }
 }
@@ -111,6 +134,7 @@ struct InsertionCommand {
     duration: u64,
     pod_num: u64,
 }
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct AdSlot {
     id: Uuid,
@@ -159,7 +183,7 @@ fn get_request_type(req: &HttpRequest) -> RequestType {
     let path = req.uri().path();
     if path.contains(MASTER_PLAYLIST) {
         return RequestType::MasterPlayList;
-    } else if path.contains(".ts") || path.contains(".cmf") {
+    } else if path.contains(".ts") || path.contains(".cmf") || path.contains(".mp") {
         return RequestType::Segment;
     } else {
         return RequestType::MediaPlayList;
@@ -175,9 +199,10 @@ fn get_query_param(req: &HttpRequest, key: &str) -> Option<String> {
 }
 
 fn build_ad_server_url(
-    ad_server_url: Url,
+    ad_server_url: &Url,
     interstitial_id: &str,
     user_id: &str,
+    config: &web::Data<ServerConfig>,
     available_slots: &web::Data<AvailableAdSlots>,
 ) -> Result<Url, Error> {
     let slot = available_slots
@@ -186,15 +211,17 @@ fn build_ad_server_url(
         .find(|slot| slot.name() == interstitial_id)
         .ok_or_else(|| error::ErrorNotFound("Ad slot missing".to_string()))?;
 
-    let mut ad_url = ad_server_url.clone();
-    ad_url
-        .query_pairs_mut()
-        .append_pair("uid", user_id)
-        .append_pair("dur", &slot.duration.to_string())
-        .append_pair("max", "5")
-        .append_pair("min", "5")
-        .append_pair("skip", "2")
-        .append_pair("pod", &slot.pod_num.to_string());
+    let ad_url = match config.ad_server_mode {
+        AdServerMode::Default => {
+            build_test_ad_server_url(ad_server_url, slot.duration, slot.pod_num, user_id)
+        }
+        AdServerMode::Advanced => build_advanced_ad_server_url(
+            ad_server_url,
+            slot.duration + BUMPER_DURATION,
+            slot.pod_num,
+            user_id,
+        ),
+    };
 
     Ok(ad_url)
 }
@@ -204,9 +231,16 @@ fn build_ad_response(
     req_url: Url,
     interstitial_id: &str,
     user_id: &str,
+    config: &web::Data<ServerConfig>,
     available_ads: web::Data<AvailableAds>,
 ) -> String {
-    let linears = get_all_linears_from_vast(&vast);
+    let mut linears = get_all_linears_from_vast(&vast);
+    // FIX: This is a temporary way to skip the first and last bumper ads
+    // As they are fMP4 and require special handling
+    if config.ad_server_mode == AdServerMode::Advanced && linears.len() >= 3 {
+        linears = linears[1..linears.len() - 1].to_vec();
+    }
+
     let mut accumulated_duration = 0;
     let assets = linears
         .iter()
@@ -244,11 +278,11 @@ fn build_ad_response(
 
 fn insert_interstitials(
     m3u8: &mut MediaPlaylist,
-    config: web::Data<ServerConfig>,
+    config: &web::Data<ServerConfig>,
     available_slots: web::Data<AvailableAdSlots>,
 ) {
     let listen_url = &config.listen_url;
-    let ad_insert_mode = &config.mode;
+    let ad_insert_mode = &config.insertion_mode;
     let segments = &mut m3u8.segments;
     let date_time_format = "%Y-%m-%dT%H:%M:%S%.3f%z";
 
@@ -278,18 +312,17 @@ fn insert_interstitials(
         *START_TIME
     };
 
-    // Generate 30 ad slots for static mode by default
-    let fixed_ad_slots: Vec<AdSlot> = (1..30)
+    // Generate ad slot every half a minute for static mode by default
+    let fixed_ad_slots: Vec<AdSlot> = (1..10)
         .map(|i| {
-            let seconds = i * 20;
+            let seconds = i * 30;
             let start_time = init_program_date_time + chrono::Duration::seconds(seconds);
 
-            // Generate ad slots with 10 seconds duration and 2 ads per pod by default
             AdSlot {
                 id: Uuid::new_v4(),
                 index: i as u64,
                 start_time: start_time,
-                duration: 10,
+                duration: DEFAULT_AD_DURATION,
                 pod_num: 2,
             }
         })
@@ -350,9 +383,11 @@ fn insert_interstitials(
                         "{listen_url}{INTERSTITIAL_PLAYLIST}?{HLS_INTERSTITIAL_ID}={ad_slot_name}"
                     );
                     let slot_duration = ad_slot.duration as f32;
-                    // Resume from the end of the ad pod for Live stream
-                    // Or from the start of the ad pod for VOD
-                    let resume_offset = if is_vod { 0.0 } else { slot_duration };
+                    let resume_offset_key = if is_vod {
+                        "X-RESUME-OFFSET"
+                    } else {
+                        "CUSTOM-DROP-OFFSET" // This will be ignored by the player
+                    };
                     let date_range = ExtXDateRange::builder()
                         .id(ad_slot_name)
                         .class("com.apple.hls.interstitial")
@@ -364,8 +399,10 @@ fn insert_interstitials(
                         .insert_client_attribute("X-SNAP", Value::String("IN,OUT".into()))
                         .insert_client_attribute("X-RESTRICT", Value::String("SKIP,JUMP".into()))
                         .insert_client_attribute(
-                            "X-RESUME-OFFSET",
-                            Value::Float(hls_m3u8::types::Float::new(resume_offset)),
+                            // Set the resume offset to 0 for VOD streams
+                            // Or drop offset for Live streams (then it resumes from the live edge)
+                            resume_offset_key,
+                            Value::Float(hls_m3u8::types::Float::new(0.0)),
                         )
                         .build()
                         .unwrap();
@@ -391,7 +428,7 @@ async fn handle_commands(
     config: web::Data<ServerConfig>,
     available_slots: web::Data<AvailableAdSlots>,
 ) -> Result<HttpResponse, Error> {
-    if config.mode == InsertionMode::Static {
+    if config.insertion_mode == InsertionMode::Static {
         return Ok(HttpResponse::BadRequest().body("Ad insertion is not supported in static mode."));
     }
 
@@ -434,12 +471,13 @@ async fn handle_commands(
 
 async fn handle_interstitials(
     req: HttpRequest,
+    ad_server_url: web::Data<Url>,
     available_ads: web::Data<AvailableAds>,
     available_slots: web::Data<AvailableAdSlots>,
-    _config: web::Data<ServerConfig>,
+    config: web::Data<ServerConfig>,
     client: web::Data<Client>,
 ) -> Result<HttpResponse, Error> {
-    let ad_server_url = Url::parse(TEST_AD_SERVER_URL).map_err(error::ErrorServiceUnavailable)?;
+    let ad_server_url = ad_server_url.clone();
     let req_url = req.full_url();
 
     let interstitial_id =
@@ -453,11 +491,18 @@ async fn handle_interstitials(
     }
     log::info!("Received interstitial request from user {user_id} for slot {interstitial_id}");
 
-    let ad_url = build_ad_server_url(ad_server_url, &interstitial_id, &user_id, &available_slots)?;
+    let ad_url = build_ad_server_url(
+        &ad_server_url,
+        &interstitial_id,
+        &user_id,
+        &config,
+        &available_slots,
+    )?;
     log::info!("Request ad pod with url {ad_url}");
 
-    let ad_req = client.get(ad_url.as_str()).no_decompress();
-    let mut res = ad_req
+    let mut res = client
+        .get(ad_url.as_str())
+        .no_decompress()
         .send()
         .await
         .map_err(error::ErrorInternalServerError)?;
@@ -467,9 +512,19 @@ async fn handle_interstitials(
 
     let body = res.body().await.map_err(error::ErrorInternalServerError)?;
     let xml = std::str::from_utf8(&body).unwrap();
-    let vast: vast4_rs::Vast = vast4_rs::from_str(&xml).unwrap();
+    log::debug!("xml \n{:?}", xml);
 
-    let response = build_ad_response(vast, req_url, &interstitial_id, &user_id, available_ads);
+    let vast: vast4_rs::Vast = vast4_rs::from_str(&xml).unwrap();
+    log::debug!("vast \n{:?}", vast);
+
+    let response = build_ad_response(
+        vast,
+        req_url,
+        &interstitial_id,
+        &user_id,
+        &config,
+        available_ads,
+    );
     log::info!("asset json reply \n{response}");
 
     Ok(client_resp.body(response))
@@ -578,7 +633,7 @@ async fn handle_media_playlist(
     let manifest = std::str::from_utf8(&body).unwrap();
     let mut m3u8 = MediaPlaylist::try_from(manifest).unwrap();
 
-    insert_interstitials(&mut m3u8, config, available_slots);
+    insert_interstitials(&mut m3u8, &config, available_slots);
 
     log::info!("m3u8 \n{m3u8}");
     client_resp.insert_header(("content-type", "application/vnd.apple.mpegurl"));
@@ -623,20 +678,39 @@ async fn main() -> io::Result<()> {
     let listen_url = format!("http://{}:{}", &args.listen_addr, args.listen_port);
     let listen_url = Url::parse(&listen_url).unwrap();
 
+    let ad_server_url = Url::parse(&args.ad_server_endpoint).unwrap();
+
     log::info!("program start time: {:?}", *START_TIME);
     log::info!("starting HTTP server at {listen_url}");
     log::info!("forwarding to {forward_url}");
-    log::info!("ad insertion mode: {:?}", args.mode);
+    log::info!("ad server endpoint: {ad_server_url}");
+    log::info!("ad server mode: {:?}", args.ad_server_mode);
+    log::info!("ad insertion mode: {:?}", args.insertion_mode);
 
+    let client_tls_config = Arc::new(rustls_config());
     let available_slots = AvailableAdSlots::default();
     let available_ads = AvailableAds::default();
-    let server_config = ServerConfig::new(listen_url, forward_url, args.mode);
+    let server_config = ServerConfig::new(
+        listen_url,
+        forward_url,
+        args.insertion_mode,
+        args.ad_server_mode,
+    );
     HttpServer::new(move || {
+        // create client inside `HttpServer::new` closure to have one per worker thread
+        let client = Client::builder()
+            // Freewheel requires a User-Agent header to make requests
+            .add_default_header((header::USER_AGENT, "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0.1 Safari/605.1.15"))
+            // a "connector" wraps the stream into an encrypted connection
+            .connector(Connector::new().rustls_0_23(Arc::clone(&client_tls_config)))
+            .finish();
+
         App::new()
-            .app_data(web::Data::new(Client::default()))
+            .app_data(web::Data::new(client))
             .app_data(web::Data::new(available_slots.clone()))
             .app_data(web::Data::new(available_ads.clone()))
             .app_data(web::Data::new(server_config.clone()))
+            .app_data(web::Data::new(ad_server_url.clone()))
             .wrap(middleware::Logger::default())
             .route(COMMAND_PREFIX, web::get().to(handle_commands))
             .route(INTERSTITIAL_PLAYLIST, web::get().to(handle_interstitials))

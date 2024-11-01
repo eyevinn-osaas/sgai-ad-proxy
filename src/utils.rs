@@ -1,5 +1,6 @@
 use actix_web::{dev::PeerAddr, web, HttpRequest, HttpResponseBuilder};
 use awc::Client;
+use rustls::{ClientConfig, RootCertStore};
 use url::Url;
 
 pub fn get_all_linears_from_vast<'a>(vast: &'a vast4_rs::Vast<'a>) -> Vec<vast4_rs::Linear<'a>> {
@@ -53,6 +54,19 @@ pub fn fixed_offset_to_local(
     date.with_timezone(&chrono::Local)
 }
 
+/// Create simple rustls client config from root certificates.
+pub fn rustls_config() -> ClientConfig {
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .unwrap();
+
+    let root_store = RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.to_owned());
+
+    rustls::ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth()
+}
+
 pub fn build_forwarded_request(
     req: &HttpRequest,
     peer_addr: Option<PeerAddr>,
@@ -82,4 +96,46 @@ pub fn build_forward_url(req: &HttpRequest, forward_url: &Url) -> Url {
     new_url.set_path(req.uri().path());
     new_url.set_query(req.uri().query());
     new_url
+}
+
+pub fn build_advanced_ad_server_url(
+    server_url: &Url,
+    duration: u64,
+    _pod_num: u64,
+    user_id: &str,
+) -> Url {
+    let mut ad_url = server_url.clone();
+    ad_url
+        .query_pairs_mut()
+        .clear()
+        .append_pair("duration", &duration.to_string())
+        .append_pair("channelId", "20007")
+        .append_pair("userId", user_id)
+        .append_pair("deviceType", "stb")
+        .append_pair("os", "ios")
+        .append_pair("screenSize", "960x540")
+        .append_pair("geolocation", "176.71.21.0")
+        .append_pair("useg", "a50-54,p4714,gm")
+        .append_pair("adLimit", "0");
+
+    ad_url
+}
+
+pub fn build_test_ad_server_url(
+    server_url: &Url,
+    duration: u64,
+    pod_num: u64,
+    user_id: &str,
+) -> Url {
+    let mut ad_url = server_url.clone();
+    ad_url
+        .query_pairs_mut()
+        .append_pair("uid", user_id)
+        .append_pair("dur", &duration.to_string())
+        .append_pair("max", "5")
+        .append_pair("min", "5")
+        .append_pair("skip", "2")
+        .append_pair("pod", &pod_num.to_string());
+
+    ad_url
 }

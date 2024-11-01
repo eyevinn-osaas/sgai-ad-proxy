@@ -162,8 +162,10 @@ dependencies = [
  "impl-more",
  "openssl",
  "pin-project-lite",
+ "rustls-pki-types",
  "tokio",
  "tokio-openssl",
+ "tokio-rustls",
  "tokio-util",
  "tracing",
 ]
@@ -265,6 +267,7 @@ dependencies = [
  "json",
  "lazy_static",
  "log",
+ "mime",
  "openssl",
  "parking_lot",
  "pin-project-lite",
@@ -283,6 +286,7 @@ dependencies = [
  "url",
  "uuid",
  "vast4-rs",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -476,6 +480,7 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "rand",
+ "rustls",
  "serde",
  "serde_json",
  "serde_urlencoded",
@@ -3524,6 +3529,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "176392cfdfe37b77c6a78f90d88e13f133fc98395e10c37754d3f6539d81ec16"
 dependencies = [
  "ebml-iterable",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "0.26.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "841c67bff177718f1d4dfefde8d8f0e78f9b6589319ba88312f567fc5841a958"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]
