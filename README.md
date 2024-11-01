@@ -67,8 +67,8 @@ Arguments:
   <LISTEN_PORT>   Proxy port
   <FORWARD_ADDR>  Origin server address(ip)
   <FORWARD_PORT>  Origin server port
-  <AD_SERVER_ENDPOINT>  Origin server endpoint(protocol://ip:port/path)
-
+  <AD_SERVER_ENDPOINT>  Ad server endpoint(protocol://ip:port/path)
+                        It should be a VAST4.0/4.1 XML endpoint
 Options:
   -a, --ad-server-mode <AD_SERVER_MODE>
     Ad server to use:

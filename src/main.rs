@@ -67,7 +67,9 @@ struct CliArguments {
     /// Origin server port
     forward_port: u16,
 
-    /// Origin server endpoint(protocol://ip:port/path)
+    /// Ad server endpoint(protocol://ip:port/path)
+    /// It should be a VAST4.0/4.1 XML endpoint
+    #[clap(verbatim_doc_comment)]
     ad_server_endpoint: String,
 
     /// Ad server to use:
