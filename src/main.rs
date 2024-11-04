@@ -1,9 +1,11 @@
 mod utils;
-use utils::*;
-
-use actix_web::{
-    dev::PeerAddr, error, middleware, web, App, Error, HttpRequest, HttpResponse, HttpServer,
+use utils::{
+    base_url, build_advanced_ad_server_url, build_forward_url, build_test_ad_server_url,
+    copy_headers, fixed_offset_to_local, get_all_linears_from_vast,
+    get_duration_and_media_urls_from_linear, rustls_config,
 };
+
+use actix_web::{error, middleware, web, App, Error, HttpRequest, HttpResponse, HttpServer};
 use awc::{http::header, Client, Connector};
 use clap::{Parser, ValueEnum};
 use dashmap::{DashMap, DashSet};
@@ -14,7 +16,6 @@ use hls_m3u8::MediaSegment;
 use json::object;
 use std::convert::TryFrom;
 use std::io;
-use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::time::Duration;
 use url::Url;
@@ -61,12 +62,11 @@ struct CliArguments {
     listen_addr: String,
     /// Proxy port
     listen_port: u16,
-    /// Origin server address (ip)
-    forward_addr: String,
-    /// Origin server port
-    forward_port: u16,
-    /// Path to the master playlist (test/master.m3u8)
-    master_playlist_path: String,
+
+    /// HLS stream address (protocol://ip:port/path)
+    /// e.g., http://localhost/test/master.m3u8)
+    #[clap(verbatim_doc_comment)]
+    master_playlist_url: String,
 
     /// Ad server endpoint (protocol://ip:port/path)
     /// It should be a VAST4.0/4.1 XML endpoint
@@ -90,6 +90,15 @@ struct CliArguments {
 pub enum AdServerMode {
     Default,
     Advanced,
+}
+
+impl AdServerMode {
+    pub fn to_str(&self) -> &str {
+        match self {
+            AdServerMode::Default => "default",
+            AdServerMode::Advanced => "advanced",
+        }
+    }
 }
 
 #[derive(ValueEnum, Clone, Debug, PartialEq)]
@@ -508,19 +517,14 @@ async fn handle_interstitials(
 
     let mut res = client
         .get(ad_url.as_str())
-        .no_decompress()
         .send()
         .await
         .map_err(error::ErrorInternalServerError)?;
 
-    let mut client_resp = HttpResponse::build(res.status());
-    client_resp.insert_header(("content-type", "application/json"));
-
-    let body = res.body().await.map_err(error::ErrorInternalServerError)?;
-    let xml = std::str::from_utf8(&body).unwrap();
+    let payload = res.body().await.map_err(error::ErrorInternalServerError)?;
+    let xml = std::str::from_utf8(&payload).unwrap();
     log::debug!("xml \n{:?}", xml);
-
-    let vast: vast4_rs::Vast = vast4_rs::from_str(&xml).unwrap();
+    let vast: vast4_rs::Vast = vast4_rs::from_str(&xml).map_err(error::ErrorBadRequest)?;
     log::debug!("vast \n{:?}", vast);
 
     let response = build_ad_response(
@@ -533,7 +537,9 @@ async fn handle_interstitials(
     );
     log::info!("asset json reply \n{response}");
 
-    Ok(client_resp.body(response))
+    Ok(HttpResponse::Ok()
+        .content_type(mime::APPLICATION_JSON)
+        .body(response))
 }
 
 async fn handle_follow_up_request(
@@ -575,89 +581,77 @@ async fn handle_follow_up_request(
 
 async fn handle_media_stream(
     req: HttpRequest,
-    payload: web::Payload,
-    peer_addr: Option<PeerAddr>,
     available_slots: web::Data<AvailableAdSlots>,
     config: web::Data<ServerConfig>,
     client: web::Data<Client>,
 ) -> Result<HttpResponse, Error> {
+    log::trace!("Received request \n{:?}", req);
     let request_type = get_request_type(&req, &config);
 
     match request_type {
-        RequestType::MasterPlayList => {
-            handle_master_playlist(req, payload, peer_addr, config, client).await
-        }
+        RequestType::MasterPlayList => handle_master_playlist(req, config, client).await,
         RequestType::MediaPlayList => {
-            handle_media_playlist(req, payload, peer_addr, available_slots, config, client).await
+            handle_media_playlist(req, available_slots, config, client).await
         }
-        RequestType::Segment => handle_segment(req, payload, peer_addr, config, client).await,
+        RequestType::Segment => handle_segment(req, config, client).await,
     }
 }
 
 async fn handle_master_playlist(
     req: HttpRequest,
-    payload: web::Payload,
-    peer_addr: Option<PeerAddr>,
     config: web::Data<ServerConfig>,
     client: web::Data<Client>,
 ) -> Result<HttpResponse, Error> {
     let new_url = build_forward_url(&req, &config.forward_url);
-    let forwarded_req = build_forwarded_request(&req, peer_addr, client, new_url);
 
-    let res = forwarded_req
-        .send_stream(payload)
+    let mut res = client
+        .get(new_url.as_str())
+        .send()
         .await
         .map_err(error::ErrorInternalServerError)?;
 
-    let mut client_resp = HttpResponse::build(res.status());
-    copy_headers(&res, &mut client_resp);
+    let payload = res.body().await.map_err(error::ErrorInternalServerError)?;
 
-    client_resp.insert_header(("content-type", "application/vnd.apple.mpegurl"));
-    Ok(client_resp.streaming(res))
+    Ok(HttpResponse::Ok()
+        .content_type("application/vnd.apple.mpegurl")
+        .body(payload))
 }
 
 async fn handle_media_playlist(
     req: HttpRequest,
-    payload: web::Payload,
-    peer_addr: Option<PeerAddr>,
     available_slots: web::Data<AvailableAdSlots>,
     config: web::Data<ServerConfig>,
     client: web::Data<Client>,
 ) -> Result<HttpResponse, Error> {
     let new_url = build_forward_url(&req, &config.forward_url);
-    let forwarded_req = build_forwarded_request(&req, peer_addr, client, new_url);
 
-    let mut res = forwarded_req
-        .send_stream(payload)
+    let mut res = client
+        .get(new_url.as_str())
+        .send()
         .await
         .map_err(error::ErrorInternalServerError)?;
 
-    let mut client_resp = HttpResponse::build(res.status());
-    copy_headers(&res, &mut client_resp);
-
-    let body = res.body().await.map_err(error::ErrorInternalServerError)?;
-    let manifest = std::str::from_utf8(&body).unwrap();
+    let payload = res.body().await.map_err(error::ErrorInternalServerError)?;
+    let manifest = std::str::from_utf8(&payload).unwrap();
     let mut m3u8 = MediaPlaylist::try_from(manifest).unwrap();
 
     insert_interstitials(&mut m3u8, &config, available_slots);
-
     log::info!("m3u8 \n{m3u8}");
-    client_resp.insert_header(("content-type", "application/vnd.apple.mpegurl"));
-    Ok(client_resp.body(m3u8.to_string()))
+
+    Ok(HttpResponse::Ok()
+        .content_type("application/vnd.apple.mpegurl")
+        .body(m3u8.to_string()))
 }
 
 async fn handle_segment(
     req: HttpRequest,
-    payload: web::Payload,
-    peer_addr: Option<PeerAddr>,
     config: web::Data<ServerConfig>,
     client: web::Data<Client>,
 ) -> Result<HttpResponse, Error> {
     let new_url = build_forward_url(&req, &config.forward_url);
-    let forwarded_req = build_forwarded_request(&req, peer_addr, client, new_url);
-
-    let res = forwarded_req
-        .send_stream(payload)
+    let res = client
+        .get(new_url.as_str())
+        .send()
         .await
         .map_err(error::ErrorInternalServerError)?;
 
@@ -673,13 +667,12 @@ async fn main() -> io::Result<()> {
 
     let args = CliArguments::parse();
 
-    let forward_socket_addr = (args.forward_addr, args.forward_port)
-        .to_socket_addrs()?
-        .next()
-        .expect("given forwarding address was not valid");
+    let master_playlist_url =
+        Url::parse(&args.master_playlist_url).expect("Invalid master playlist URL");
 
-    let forward_url = format!("http://{forward_socket_addr}");
-    let forward_url = Url::parse(&forward_url).unwrap();
+    // Forward URL is the base URL of the master playlist
+    let forward_url = base_url(&master_playlist_url).expect("Invalid forward URL");
+    let playlist_path = master_playlist_url.path();
 
     let listen_url = format!("http://{}:{}", &args.listen_addr, args.listen_port);
     let listen_url = Url::parse(&listen_url).unwrap();
@@ -687,11 +680,12 @@ async fn main() -> io::Result<()> {
     let ad_server_url = Url::parse(&args.ad_server_endpoint).unwrap();
 
     log::info!("program start time: {:?}", *START_TIME);
-    log::info!("starting HTTP server at {listen_url}");
-    log::info!("forwarding to {forward_url}");
-    log::info!("ad server endpoint: {ad_server_url}");
-    log::info!("ad server mode: {:?}", args.ad_server_mode);
-    log::info!("ad insertion mode: {:?}", args.insertion_mode);
+    log::info!("starting HTTP server at {listen_url}, fowarding to {forward_url}");
+    log::info!(
+        "ad server endpoint: {ad_server_url}, {:?} mode, {:?} insertion",
+        args.ad_server_mode.to_str(),
+        args.insertion_mode.to_str()
+    );
 
     let client_tls_config = Arc::new(rustls_config());
     let available_slots = AvailableAdSlots::default();
@@ -699,7 +693,7 @@ async fn main() -> io::Result<()> {
     let server_config = ServerConfig::new(
         listen_url,
         forward_url,
-        args.master_playlist_path,
+        playlist_path.to_string(),
         args.insertion_mode,
         args.ad_server_mode,
     );

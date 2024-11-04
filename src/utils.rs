@@ -1,7 +1,6 @@
-use actix_web::{dev::PeerAddr, web, HttpRequest, HttpResponseBuilder};
-use awc::Client;
+use actix_web::{HttpRequest, HttpResponseBuilder};
 use rustls::{ClientConfig, RootCertStore};
-use url::Url;
+use url::{ParseError, Url};
 
 pub fn get_all_linears_from_vast<'a>(vast: &'a vast4_rs::Vast<'a>) -> Vec<vast4_rs::Linear<'a>> {
     let ads = &vast.ads;
@@ -67,22 +66,20 @@ pub fn rustls_config() -> ClientConfig {
         .with_no_client_auth()
 }
 
-pub fn build_forwarded_request(
-    req: &HttpRequest,
-    peer_addr: Option<PeerAddr>,
-    client: web::Data<Client>,
-    new_url: Url,
-) -> awc::ClientRequest {
-    let forwarded_req = client
-        .request_from(new_url.as_str(), req.head())
-        .no_decompress();
-
-    match peer_addr {
-        Some(PeerAddr(addr)) => {
-            forwarded_req.insert_header(("x-forwarded-for", addr.ip().to_string()))
+pub fn base_url(url: &Url) -> Result<Url, ParseError> {
+    let mut clone = url.clone();
+    match clone.path_segments_mut() {
+        Ok(mut path) => {
+            path.clear();
         }
-        None => forwarded_req,
+        Err(_) => {
+            return Err(ParseError::RelativeUrlWithoutBase);
+        }
     }
+
+    clone.set_query(None);
+
+    Ok(clone)
 }
 
 pub fn copy_headers<T>(res: &awc::ClientResponse<T>, client_resp: &mut HttpResponseBuilder) {
