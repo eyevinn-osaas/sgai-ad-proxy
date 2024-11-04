@@ -10,7 +10,7 @@ This application is a simple http proxy server that inserts ads into a video str
 
 ```bash
 # Use ffmpeg to create a simple HLS Live stream under the "test" directory
-ffmpeg -y -re -i sintel_trailer-1080p.mp4 \
+ffmpeg -y -re -stream_loop -1 -i sintel_trailer-1080p.mp4 \
   -preset slow -g 48 -sc_threshold 0 \
   -map 0:0 -map 0:1 -map 0:0 -map 0:1 \
   -s:v:0 640x360 -c:v:0 libx264 -b:v:0 365k \
@@ -21,23 +21,14 @@ ffmpeg -y -re -i sintel_trailer-1080p.mp4 \
   -f hls -hls_time 4 -hls_list_size 8 -hls_delete_threshold 10 -hls_flags round_durations -hls_flags program_date_time \
   -hls_segment_filename "test/v%v/fileSequence%d.ts" test/v%v/media.m3u8
 
-# Serve the HLS Live stream using a simple http server **above** the "test" directory
+# Serve the HLS Live stream using a simple http server *above* the "test" directory
 python -m http.server 8001
 
 # Now you can access the HLS stream at http://127.0.0.1:8001/test/master.m3u8
 ```
 
-* A running instance of the [test-ad-server](https://github.com/Eyevinn/test-adserver)
-
-```bash
-# Start the test ad server on port 8000
-export PORT=8000
-
-npm install
-npm start
-
-# Now you can access the test ad server at http://127.0.0.1:8000/api/docs
-```
+* A running instance of the [ad-server](https://github.com/Eyevinn/test-adserver).
+For example, one test ad server is available at <https://eyevinn-sgai.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/vast>
 
 * AvPlayer or any other video player that supports Server Guided Ad Insertion (SGAI)
 
@@ -49,10 +40,10 @@ npm start
 ### Run
 
 ```bash
-# Start the ad-proxy server on port 3333 with origin server on port 8001 and test ad server on port 8000
-# The master playlist is located at test/master.m3u8 in the origin server
+# Start the ad-proxy server on port 3333 with the origin HLS stream (http://localhost:8001/loop/master.m3u8) and test ad server
 # Use dynamic mode to insert ads into the HLS Live stream at specified timepoints
-cargo run --bin ad_proxy 127.0.0.1 3333 127.0.0.1 8001 test/master.m3u8 http://localhost:8000/api/v1/vast -i dynamic
+cargo run --bin ad_proxy 127.0.0.1 3333 http://localhost:8001/test/master.m3u8 \
+https://eyevinn-sgai.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/vast -i dynamic
 
 # Now you can access the HLS Live stream at http://127.0.0.1:3333/test/master.m3u8
 # NOTE: Each proxy server instance can only handle one HLS Live stream at a time and restart is required to switch streams
@@ -64,13 +55,13 @@ For more options, run `ad_proxy --help`
 Usage: ad_proxy [OPTIONS] <LISTEN_ADDR> <LISTEN_PORT> <FORWARD_ADDR> <FORWARD_PORT> <AD_SERVER_ENDPOINT>
 
 Arguments:
-  <LISTEN_ADDR>           Proxy address (ip)
-  <LISTEN_PORT>           Proxy port
-  <FORWARD_ADDR>          Origin server address (ip)
-  <FORWARD_PORT>          Origin server port
-  <MASTER_PLAYLIST_PATH>  Path to the master playlist (test/master.m3u8)
-  <AD_SERVER_ENDPOINT>    Ad server endpoint (protocol://ip:port/path)
-                          It should be a VAST4.0/4.1 XML endpoint
+  <LISTEN_ADDR>          Proxy address (ip)
+  <LISTEN_PORT>          Proxy port
+  <MASTER_PLAYLIST_URL>  HLS stream address (protocol://ip:port/path)
+                         e.g., http://localhost/test/master.m3u8)
+  <AD_SERVER_ENDPOINT>   Ad server endpoint (protocol://ip:port/path)
+                         It should be a VAST4.0/4.1 XML endpoint
+
 Options:
   -a, --ad-server-mode <AD_SERVER_MODE>
     Ad server to use:
@@ -129,6 +120,23 @@ fileSequence17.ts
 fileSequence18.ts
 ```
 
+### Example JSON response for interstitials
+
+``` json
+{
+   "ASSETS":[
+      {
+         "URI":"http://127.0.0.1:3333/interstitials.m3u8?_HLS_interstitial_id=ad_slot0&_HLS_primary_id=40FE1829-438E-49B0-8B3A-A285DD4A8154&_HLS_start_offset=0&_HLS_follow_id=361434bf-05e7-4e17-83ca-690452e1cb33",
+         "DURATION":5
+      },
+      {
+         "URI":"http://127.0.0.1:3333/interstitials.m3u8?_HLS_interstitial_id=ad_slot0&_HLS_primary_id=40FE1829-438E-49B0-8B3A-A285DD4A8154&_HLS_start_offset=5&_HLS_follow_id=eb805a34-1d61-4217-9632-deab8790c30d",
+         "DURATION":5
+      }
+   ]
+}
+```
+
 ## License (Apache-2.0)
 
 Copyright 2023 Eyevinn Technology AB
@@ -137,7 +145,9 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+``` text
+  http://www.apache.org/licenses/LICENSE-2.0
+```
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -149,9 +159,9 @@ limitations under the License.
 
 Join our [community on Slack](http://slack.streamingtech.se) where you can post any questions regarding any of our open source projects. Eyevinn's consulting business can also offer you:
 
-- Further development of this component
-- Customization and integration of this component into your platform
-- Support and maintenance agreement
+* Further development of this component
+* Customization and integration of this component into your platform
+* Support and maintenance agreement
 
 Contact [sales@eyevinn.se](mailto:sales@eyevinn.se) if you are interested.
 
