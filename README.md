@@ -18,7 +18,7 @@ ffmpeg -y -re -stream_loop -1 -i sintel_trailer-1080p.mp4 \
   -c:a copy \
   -var_stream_map "v:0,a:0 v:1,a:1" \
   -master_pl_name master.m3u8 \
-  -f hls -hls_time 4 -hls_list_size 8 -hls_flags round_durations -hls_flags program_date_time -hls_flags delete_segments \
+  -f hls -hls_time 4 -hls_list_size 8 -hls_flags round_durations+program_date_time+delete_segments \
   -hls_segment_filename "test/v%v/fileSequence%d.ts" test/v%v/media.m3u8
 
 # Serve the HLS Live stream using a simple http server *above* the "test" directory
