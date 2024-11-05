@@ -69,7 +69,7 @@ struct CliArguments {
     master_playlist_url: String,
 
     /// Ad server endpoint (protocol://ip:port/path)
-    /// It should be a VAST4.0/4.1 XML endpoint
+    /// It should be a VAST4.0/4.1 XML compatible endpoint
     #[clap(verbatim_doc_comment)]
     ad_server_endpoint: String,
 
@@ -84,6 +84,12 @@ struct CliArguments {
     /// 2) dynamic - add intertistial when requested (Live Content only).
     #[clap(short, long, value_enum, verbatim_doc_comment, default_value_t = InsertionMode::Static)]
     insertion_mode: InsertionMode,
+
+    /// Base URL for interstitals (protocol://ip:port)
+    /// If not provided, the server will use 'localhost' and the 'listen port' as the base URL
+    /// e.g., http://localhost:${LISTEN_PORT}
+    #[clap(long, verbatim_doc_comment, default_value_t = String::from(""))]
+    interstitals_address: String,
 }
 
 #[derive(ValueEnum, Clone, Debug, PartialEq)]
@@ -118,8 +124,8 @@ impl InsertionMode {
 
 #[derive(Debug, Clone)]
 struct ServerConfig {
-    listen_url: Url,
     forward_url: Url,
+    interstitials_address: Url,
     master_playlist_path: String,
     insertion_mode: InsertionMode,
     ad_server_mode: AdServerMode,
@@ -127,15 +133,15 @@ struct ServerConfig {
 
 impl ServerConfig {
     fn new(
-        listen_url: Url,
         forward_url: Url,
+        interstitials_address: Url,
         master_playlist_path: String,
         insertion_mode: InsertionMode,
         ad_server_mode: AdServerMode,
     ) -> Self {
         Self {
-            listen_url,
             forward_url,
+            interstitials_address,
             master_playlist_path,
             insertion_mode,
             ad_server_mode,
@@ -288,7 +294,7 @@ fn build_ad_response(
     object! {
         ASSETS: assets,
     }
-    .dump()
+    .pretty(2)
 }
 
 fn insert_interstitials(
@@ -296,7 +302,7 @@ fn insert_interstitials(
     config: &web::Data<ServerConfig>,
     available_slots: web::Data<AvailableAdSlots>,
 ) {
-    let listen_url = &config.listen_url;
+    let interstitials_address = &config.interstitials_address;
     let ad_insert_mode = &config.insertion_mode;
     let segments = &mut m3u8.segments;
     let date_time_format = "%Y-%m-%dT%H:%M:%S%.3f%z";
@@ -310,7 +316,7 @@ fn insert_interstitials(
         });
 
     if first_program_date_time.is_none() {
-        log::info!("No program_date_time found in the manifest. Skipping interstitials.");
+        log::warn!("No program_date_time found in the manifest. Skipping interstitials.");
         return;
     }
 
@@ -395,7 +401,7 @@ fn insert_interstitials(
 
                     let ad_slot_name = ad_slot.name();
                     let url = format!(
-                        "{listen_url}{INTERSTITIAL_PLAYLIST}?{HLS_INTERSTITIAL_ID}={ad_slot_name}"
+                        "{interstitials_address}{INTERSTITIAL_PLAYLIST}?{HLS_INTERSTITIAL_ID}={ad_slot_name}"
                     );
                     let slot_duration = ad_slot.duration as f32;
                     let resume_offset_key = if is_vod {
@@ -524,8 +530,12 @@ async fn handle_interstitials(
     let payload = res.body().await.map_err(error::ErrorInternalServerError)?;
     let xml = std::str::from_utf8(&payload).unwrap();
     log::debug!("xml \n{:?}", xml);
-    let vast: vast4_rs::Vast = vast4_rs::from_str(&xml).map_err(error::ErrorBadRequest)?;
-    log::debug!("vast \n{:?}", vast);
+    let vast: vast4_rs::Vast = vast4_rs::from_str(&xml)
+        .inspect_err(|err| {
+            log::error!("Error parsing VAST: {:?}", err);
+        })
+        // Return an empty VAST in case of parsing error
+        .unwrap_or_default();
 
     let response = build_ad_response(
         vast,
@@ -674,15 +684,23 @@ async fn main() -> io::Result<()> {
     let forward_url = base_url(&master_playlist_url).expect("Invalid forward URL");
     let playlist_path = master_playlist_url.path();
 
-    let listen_url = format!("http://{}:{}", &args.listen_addr, args.listen_port);
-    let listen_url = Url::parse(&listen_url).unwrap();
+    let listen_url = format!("http://{}:{}", &args.listen_addr, &args.listen_port);
+    let listen_url = Url::parse(&listen_url).expect("Invalid listen address");
+
+    let interstitials_address = if args.interstitals_address.is_empty() {
+        format!("http://localhost:{}", &args.listen_port)
+    } else {
+        args.interstitals_address
+    };
+    let interstitials_address =
+        Url::parse(&interstitials_address).expect("Invalid interstitials address");
 
     let ad_server_url = Url::parse(&args.ad_server_endpoint).unwrap();
 
-    log::info!("program start time: {:?}", *START_TIME);
-    log::info!("starting HTTP server at {listen_url}, fowarding to {forward_url}");
+    log::info!("Program started at: {:?}", *START_TIME);
+    log::info!("Starting HTTP server at {listen_url}, fowarding to {forward_url}, interstials' base URL: {interstitials_address}");
     log::info!(
-        "ad server endpoint: {ad_server_url}, {:?} mode, {:?} insertion",
+        "Ad server endpoint: {ad_server_url}, {:?} mode, {:?} insertion",
         args.ad_server_mode.to_str(),
         args.insertion_mode.to_str()
     );
@@ -691,8 +709,8 @@ async fn main() -> io::Result<()> {
     let available_slots = AvailableAdSlots::default();
     let available_ads = AvailableAds::default();
     let server_config = ServerConfig::new(
-        listen_url,
         forward_url,
+        interstitials_address,
         playlist_path.to_string(),
         args.insertion_mode,
         args.ad_server_mode,

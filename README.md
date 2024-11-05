@@ -1,6 +1,6 @@
 # Server-Guided Ad Insertion Proxy
 
-This application is a simple http proxy server that inserts ads into a video stream. It is designed to be used in conjunction with a video player (e.g., AVPlayer) that supports Server Guided Ad Insertion (SGAI). The proxy server intercepts the video stream from the origin server and inserts ads into the media playlist as interstitals at specifed timepoints.
+This application is a simple **http** proxy server that inserts ads into a video stream. It is designed to be used in conjunction with a video player (e.g., AVPlayer) that supports Server Guided Ad Insertion (SGAI). The proxy server intercepts the video stream from the origin server and inserts ads into the media playlist as interstitals at specifed timepoints.
 
 ## Getting Started
 
@@ -42,6 +42,7 @@ For example, one test ad server is available at <https://eyevinn-sgai.eyevinn-te
 ```bash
 # Start the ad-proxy server on port 3333 with the origin HLS stream (http://localhost:8001/loop/master.m3u8) and test ad server
 # Use dynamic mode to insert ads into the HLS Live stream at specified timepoints
+# Use http://localhost:3333 as the base URL for interstitals (by default)
 cargo run --bin ad_proxy 127.0.0.1 3333 http://localhost:8001/test/master.m3u8 \
 https://eyevinn-sgai.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/vast -i dynamic
 
@@ -52,7 +53,7 @@ https://eyevinn-sgai.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/vast -i dyn
 For more options, run `ad_proxy --help`
 
 ```bash
-Usage: ad_proxy [OPTIONS] <LISTEN_ADDR> <LISTEN_PORT> <FORWARD_ADDR> <FORWARD_PORT> <AD_SERVER_ENDPOINT>
+Usage: ad_proxy [OPTIONS] <LISTEN_ADDR> <LISTEN_PORT> <MASTER_PLAYLIST_URL> <AD_SERVER_ENDPOINT>
 
 Arguments:
   <LISTEN_ADDR>          Proxy address (ip)
@@ -60,17 +61,21 @@ Arguments:
   <MASTER_PLAYLIST_URL>  HLS stream address (protocol://ip:port/path)
                          e.g., http://localhost/test/master.m3u8)
   <AD_SERVER_ENDPOINT>   Ad server endpoint (protocol://ip:port/path)
-                         It should be a VAST4.0/4.1 XML endpoint
+                         It should be a VAST4.0/4.1 XML compatible endpoint
 
 Options:
   -a, --ad-server-mode <AD_SERVER_MODE>
-    Ad server to use:
-    1) default  - use default test ad server
-    2) advanced - use custom ad server [default: default]
+          Ad server to use:
+          1) default  - use default test ad server
+          2) advanced - use custom ad server [default: default] [possible values: default, advanced]
   -i, --insertion-mode <INSERTION_MODE>
-    Ad insertion mode to use:
-    1) static  - add intertistial every 30 seconds (10 in total).
-    2) dynamic - add intertistial when requested (Live Content only). [default: static]
+          Ad insertion mode to use:
+          1) static  - add intertistial every 30 seconds (10 in total).
+          2) dynamic - add intertistial when requested (Live Content only). [default: static] [possible values: static, dynamic]
+      --interstitals-address <INTERSTITALS_ADDRESS>
+          Base URL for interstitals (protocol://ip:port)
+          If not provided, the server will use 'localhost' and the 'listen port' as the base URL
+          e.g., http://localhost:${LISTEN_PORT}
 ```
 
 ### Insert Ads
@@ -108,7 +113,7 @@ fileSequence14.ts
 #EXT-X-PROGRAM-DATE-TIME:2024-10-30T12:52:43.853+0100
 #EXTINF:4,
 fileSequence15.ts
-#EXT-X-DATERANGE:ID="ad_slot0",CLASS="com.apple.hls.interstitial",START-DATE="2024-10-30T12:52:47.207+01:00",DURATION=10,X-ASSET-LIST="http://127.0.0.1:3333/interstitials.m3u8?_HLS_interstitial_id=ad_slot0",X-RESTRICT="SKIP,JUMP",X-RESUME-OFFSET=10,X-SNAP="IN,OUT"
+#EXT-X-DATERANGE:ID="ad_slot0",CLASS="com.apple.hls.interstitial",START-DATE="2024-10-30T12:52:47.207+01:00",DURATION=10,X-ASSET-LIST="http://localhost:3333/interstitials.m3u8?_HLS_interstitial_id=ad_slot0",X-RESTRICT="SKIP,JUMP",X-RESUME-OFFSET=10,X-SNAP="IN,OUT"
 #EXT-X-PROGRAM-DATE-TIME:2024-10-30T12:52:47.853+0100
 #EXTINF:4,
 fileSequence16.ts
@@ -126,11 +131,11 @@ fileSequence18.ts
 {
    "ASSETS":[
       {
-         "URI":"http://127.0.0.1:3333/interstitials.m3u8?_HLS_interstitial_id=ad_slot0&_HLS_primary_id=40FE1829-438E-49B0-8B3A-A285DD4A8154&_HLS_start_offset=0&_HLS_follow_id=361434bf-05e7-4e17-83ca-690452e1cb33",
+         "URI":"http://localhost:3333/interstitials.m3u8?_HLS_interstitial_id=ad_slot0&_HLS_primary_id=40FE1829-438E-49B0-8B3A-A285DD4A8154&_HLS_start_offset=0&_HLS_follow_id=361434bf-05e7-4e17-83ca-690452e1cb33",
          "DURATION":5
       },
       {
-         "URI":"http://127.0.0.1:3333/interstitials.m3u8?_HLS_interstitial_id=ad_slot0&_HLS_primary_id=40FE1829-438E-49B0-8B3A-A285DD4A8154&_HLS_start_offset=5&_HLS_follow_id=eb805a34-1d61-4217-9632-deab8790c30d",
+         "URI":"http://localhost:3333/interstitials.m3u8?_HLS_interstitial_id=ad_slot0&_HLS_primary_id=40FE1829-438E-49B0-8B3A-A285DD4A8154&_HLS_start_offset=5&_HLS_follow_id=eb805a34-1d61-4217-9632-deab8790c30d",
          "DURATION":5
       }
    ]
