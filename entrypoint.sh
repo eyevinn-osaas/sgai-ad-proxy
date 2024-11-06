@@ -12,5 +12,5 @@ fi
 
 /app/ad_proxy 0.0.0.0 ${PORT:-8080} \
   ${ORIGIN_URL} \
-  ${VAST_ENDPOINT} -a advanced -i ${INSERTION_MODE:-static} \
+  ${VAST_ENDPOINT} -i ${INSERTION_MODE:-static} \
   --interstitals-address https://${OSC_HOSTNAME}
