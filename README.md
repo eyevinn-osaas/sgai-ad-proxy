@@ -70,7 +70,7 @@ Options:
           2) advanced - use custom ad server [default: default] [possible values: default, advanced]
   -i, --insertion-mode <INSERTION_MODE>
           Ad insertion mode to use:
-          1) static  - add intertistial every 30 seconds (10 in total).
+          1) static  - add intertistial every 30 seconds (100 in total).
           2) dynamic - add intertistial when requested (Live Content only). [default: static] [possible values: static, dynamic]
       --interstitals-address <INTERSTITALS_ADDRESS>
           Base URL for interstitals (protocol://ip:port)
@@ -141,6 +141,14 @@ fileSequence18.ts
    ]
 }
 ```
+
+## Limitations
+
+* In order to place the interstitials at the correct timepoints, the origin media playlist must contain the `EXT-X-PROGRAM-DATE-TIME` tag. Otherwise, no interstitials will be inserted (the origin media playlist will be returned).
+* The creatives from ad server are mostly regular MPEG-4 files (ftyp+moov+mdat). Video player like hls.js can only handle
+fragmented MPEG-4 files (ftyp+moov+moof+mdat+moof+mdat+…). Therefore, it would fail to play out the interstitials. To support hls.js,
+one might have to transcode the creatives to fragmented MPEG-4 or ts files first.
+* The proxy server can only handle one HLS stream at a time. To switch streams, the server must be restarted.
 
 ## License (Apache-2.0)
 
