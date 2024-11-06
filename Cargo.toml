@@ -16,11 +16,16 @@ path = "src/main.rs"
 name = "vast_parser"
 path = "src/vast_parser.rs"
 
+[[bin]]
+name = "mp4_parser"
+path = "src/mp4_parser.rs"
+
 [dependencies]
 awc = { version = "3.5.1", features = ["rustls-0_23"] }
 actix = "0.13.5"
 actix-web = { version = "4.9.0", features = ["openssl"] }
 actix-http = "3.9.0"
+actix-cors = "0.7.0"
 
 clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4.30", features = ["serde"] }
@@ -62,3 +67,4 @@ mime = "0.3"
 dash-mpd = "0.17.3"
 hls_m3u8 = { version = "0.4.2", features = ["backtrace"] }
 vast4-rs = "1.0.6"
+mp4 = "0.14.0"

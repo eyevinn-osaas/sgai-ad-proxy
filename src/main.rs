@@ -80,7 +80,7 @@ struct CliArguments {
     ad_server_mode: AdServerMode,
 
     /// Ad insertion mode to use:
-    /// 1) static  - add intertistial every 30 seconds (10 in total).
+    /// 1) static  - add intertistial every 30 seconds (100 in total).
     /// 2) dynamic - add intertistial when requested (Live Content only).
     #[clap(short, long, value_enum, verbatim_doc_comment, default_value_t = InsertionMode::Static)]
     insertion_mode: InsertionMode,
@@ -334,7 +334,7 @@ fn insert_interstitials(
     };
 
     // Generate ad slot every half a minute for static mode by default
-    let fixed_ad_slots: Vec<AdSlot> = (1..10)
+    let fixed_ad_slots: Vec<AdSlot> = (1..100)
         .map(|i| {
             let seconds = i * 30;
             let start_time = init_program_date_time + chrono::Duration::seconds(seconds);
@@ -716,6 +716,8 @@ async fn main() -> io::Result<()> {
         args.ad_server_mode,
     );
     HttpServer::new(move || {
+        let cors = actix_cors::Cors::permissive();
+
         // create client inside `HttpServer::new` closure to have one per worker thread
         let client = Client::builder()
             // Freewheel requires a User-Agent header to make requests
@@ -731,6 +733,7 @@ async fn main() -> io::Result<()> {
             .app_data(web::Data::new(server_config.clone()))
             .app_data(web::Data::new(ad_server_url.clone()))
             .wrap(middleware::Logger::default())
+            .wrap(cors)
             .route(COMMAND_PREFIX, web::get().to(handle_commands))
             .route(INTERSTITIAL_PLAYLIST, web::get().to(handle_interstitials))
             .default_service(web::to(handle_media_stream))
