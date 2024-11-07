@@ -2,13 +2,13 @@
 
 [![Badge OSC](https://img.shields.io/badge/Evaluate-24243B?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iMTIiIGZpbGw9InVybCgjcGFpbnQwX2xpbmVhcl8yODIxXzMxNjcyKSIvPgo8Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSI3IiBzdHJva2U9ImJsYWNrIiBzdHJva2Utd2lkdGg9IjIiLz4KPGRlZnM%2BCjxsaW5lYXJHcmFkaWVudCBpZD0icGFpbnQwX2xpbmVhcl8yODIxXzMxNjcyIiB4MT0iMTIiIHkxPSIwIiB4Mj0iMTIiIHkyPSIyNCIgZ3JhZGllbnRVbml0cz0idXNlclNwYWNlT25Vc2UiPgo8c3RvcCBzdG9wLWNvbG9yPSIjQzE4M0ZGIi8%2BCjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzREQzlGRiIvPgo8L2xpbmVhckdyYWRpZW50Pgo8L2RlZnM%2BCjwvc3ZnPgo%3D)](https://app.osaas.io/browse/eyevinn-sgai-ad-proxy)
 
-This application is a simple **http** proxy server that inserts ads into a video stream. It is designed to be used in conjunction with a video player (e.g., AVPlayer) that supports Server Guided Ad Insertion (SGAI). The proxy server intercepts the video stream from the origin server and inserts ads into the media playlist as interstitals at specifed timepoints.
+This application is a simple **http** proxy server that inserts ads into a video stream. It is designed to be used in conjunction with a video player (e.g., AVPlayer) that supports Server Guided Ad Insertion (SGAI). The proxy server intercepts the video stream from the origin server and inserts ads into the media playlist as interstitials at specified timepoints.
 
 ## Getting Started
 
 ### Prerequisites
 
-* An HLS streaming sever
+* An HLS streaming server
 
 ```bash
 # Use ffmpeg to create a simple HLS Live stream under the "test" directory
@@ -32,7 +32,7 @@ python -m http.server 8001
 * A running instance of the [ad-server](https://github.com/Eyevinn/test-adserver).
 For example, one test ad server is available at <https://eyevinn-sgai.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/vast>
 
-* AvPlayer or any other video player that supports Server Guided Ad Insertion (SGAI)
+* AVPlayer or any other video player that supports Server Guided Ad Insertion (SGAI)
 
 ```bash
 # Once the ad-proxy server is running (e.g., on port 3333), 
@@ -42,11 +42,14 @@ For example, one test ad server is available at <https://eyevinn-sgai.eyevinn-te
 ### Run
 
 ```bash
-# Start the ad-proxy server on port 3333 with the origin HLS stream (http://localhost:8001/loop/master.m3u8) and test ad server
-# Use dynamic mode to insert ads into the HLS Live stream at specified timepoints
-# Use http://localhost:3333 as the base URL for interstitals (by default)
+# Start the ad-proxy server on port 3333 with the origin HLS stream at http://localhost:8001/loop/master.m3u8
+# 1. Use test ad server at https://eyevinn-sgai.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/vast with query parameters dur, uid, ps, min, and max
+# Here the [template.*] will be replaced with the actual values before sending the request to the ad server while the rest will be passed as is
+# 2. Use dynamic mode to insert ads into the HLS Live stream at specified timepoints
+# 3. Use http://localhost:3333 as the base URL for interstitials (by default)
 cargo run --bin ad_proxy 127.0.0.1 3333 http://localhost:8001/test/master.m3u8 \
-https://eyevinn-sgai.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/vast -i dynamic
+https://eyevinn-sgai.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/vast?dur=[template.duration]&uid=[template.sessionId]&ps=[template.pod]&min=5&max=5 \
+--ad-insertion-mode dynamic
 
 # Now you can access the HLS Live stream at http://127.0.0.1:3333/test/master.m3u8
 # NOTE: Each proxy server instance can only handle one HLS Live stream at a time and restart is required to switch streams
@@ -66,18 +69,14 @@ Arguments:
                          It should be a VAST4.0/4.1 XML compatible endpoint
 
 Options:
-  -a, --ad-server-mode <AD_SERVER_MODE>
-          Ad server to use:
-          1) default  - use default test ad server
-          2) advanced - use custom ad server [default: default] [possible values: default, advanced]
-  -i, --insertion-mode <INSERTION_MODE>
+  -a, --ad-insertion-mode <AD_INSERTION_MODE>
           Ad insertion mode to use:
           1) static  - add intertistial every 30 seconds (100 in total).
           2) dynamic - add intertistial when requested (Live Content only). [default: static] [possible values: static, dynamic]
-      --interstitals-address <INTERSTITALS_ADDRESS>
-          Base URL for interstitals (protocol://ip:port)
+  -i, --interstitials-address <INTERSTITALS_ADDRESS>
+          Base URL for interstitials (protocol://ip:port)
           If not provided, the server will use 'localhost' and the 'listen port' as the base URL
-          e.g., http://localhost:${LISTEN_PORT}
+          e.g., http://localhost:${LISTEN_PORT} [default: ]
 ```
 
 ### Insert Ads
@@ -93,6 +92,20 @@ For example, to insert an ad break at 5 seconds from the live-edge with a durati
 ```bash
 curl http://127.0.0.1:3333/command?in=5&dur=10&pod=2
 ```
+
+It is also possible to check the status of the proxy server by sending a GET request:  
+
+```bash
+curl http://127.0.0.1:3333/status
+```
+
+### Ad personalization
+
+Ad personalization can be achieved by combining the following two methods:
+
+1. **Ad Server URL Query Parameters**: The ad server endpoint can include query parameters that will be dynamically replaced with actual values before sending the request. For example, in the ad server endpoint `https://eyevinn-sgai.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/vast?dur=[template.duration]&uid=[template.sessionId]&ps=[template.pod]&min=5&max=5`, the query parameters `dur`, `uid`, and `ps` will be replaced with actual values, while `min` and `max` will remain unchanged. These values apply to ad requests for **all** playback sessions.
+
+2. **Master Playlist URL Query Parameters**: The master playlist URL can include query parameters that will be forwarded to the ad server. For example, if a client initializes the playback with URL `http://127.0.0.1:3333/loop/master.m3u8?customString=abc`, the query parameter `customString` will be appended to the ad server request, resulting in `https://eyevinn-sgai.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/vast?dur=[template.duration]&uid=[template.sessionId]&ps=[template.pod]&min=5&max=5&customString=abc`. It is worth noting that this **only** applies to a specific playback session as AVPlayer and Safari support setting the 'X-PLAYBACK-SESSION-ID' request header and '_HLS_primary_id' query parameter of interstitial requests with a common, globally-unique value on every HTTP request associated with a particular playback session.
 
 ### Example Modified Media Playlist
 
@@ -185,6 +198,6 @@ Contact [sales@eyevinn.se](mailto:sales@eyevinn.se) if you are interested.
 
 Eyevinn Technology is an independent consultant firm specialized in video and streaming. Independent in a way that we are not commercially tied to any platform or technology vendor.
 
-At Eyevinn, every software developer consultant has a dedicated budget reserved for open source development and contribution to the open source community. This give us room for innovation, team building and personal competence development. And also gives us as a company a way to contribute back to the open source community.
+At Eyevinn, every software developer consultant has a dedicated budget reserved for open source development and contribution to the open source community. This gives us room for innovation, team building and personal competence development. And also gives us as a company a way to contribute back to the open source community.
 
 Want to know more about Eyevinn and how it is to work here. Contact us at <work@eyevinn.se>!
