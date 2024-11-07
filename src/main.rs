@@ -1,11 +1,10 @@
 mod utils;
 use utils::{
     base_url, build_forward_url, copy_headers, fixed_offset_to_local, get_all_linears_from_vast,
-    get_duration_and_media_urls_from_linear, get_query_param, rustls_config,
+    get_duration_and_media_urls_from_linear, get_header_value, get_query_param, rustls_config,
 };
 
 use actix_web::{error, middleware, web, App, Error, HttpRequest, HttpResponse, HttpServer};
-use async_lock::RwLock;
 use awc::{http::header, Client, Connector};
 use clap::{Parser, ValueEnum};
 use dashmap::{DashMap, DashSet};
@@ -128,7 +127,27 @@ impl AvailableAdSlots {
 }
 
 #[derive(Clone, Default)]
-struct UserDefinedQueryParams(Arc<RwLock<String>>);
+struct UserDefinedQueryParams(Arc<DashMap<Uuid, String>>);
+
+impl UserDefinedQueryParams {
+    fn to_json(&self) -> json::JsonValue {
+        let params = self
+            .0
+            .iter()
+            .map(|entry| {
+                let (id, query) = entry.pair();
+                object! {
+                    "id": id.to_string(),
+                    "query": query.clone(),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        object! {
+            "params": params,
+        }
+    }
+}
 
 #[derive(clap::Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -298,15 +317,18 @@ async fn build_ad_server_url(
         .collect::<Vec<_>>()
         .join("&");
 
-    let user_defined_query_params = user_defined_query_params.0.read().await;
-    let full_queries = if user_defined_query_params.is_empty() {
-        transformed_queries
+    // AVPlayer and Safari support setting the 'X-PLAYBACK-SESSION-ID' request
+    // header with a common, globally-unique value on every HTTP request
+    // associated with a particular playback session, which matches the
+    // _HLS_primary_id query parameter of interstitial requests.
+    let user_defined_queries = Uuid::parse_str(user_id)
+        .ok()
+        .and_then(|uuid| user_defined_query_params.0.get(&uuid));
+
+    let full_queries = if let Some(user_defined_queries) = user_defined_queries {
+        format!("{}&{}", transformed_queries, user_defined_queries.as_str())
     } else {
-        format!(
-            "{}&{}",
-            transformed_queries,
-            user_defined_query_params.as_str()
-        )
+        transformed_queries
     };
 
     // Clone the original URL and set the new query string
@@ -634,7 +656,7 @@ async fn handle_follow_up_request(
     // return http 404 error if the ad is not found
     let linear = available_ads
         .linears
-        .get(&Uuid::parse_str(linear_id).unwrap())
+        .get(&Uuid::parse_str(linear_id).unwrap_or_default())
         .ok_or_else(|| error::ErrorNotFound("Ad not found".to_string()))?;
 
     let segment = MediaSegment::builder()
@@ -700,8 +722,13 @@ async fn handle_master_playlist(
 
     // Save the user-defined query parameters for later use
     if let Some(query_params) = req.uri().query() {
-        // NOTE: This will overwrite the query parameters from previous client
-        *user_defined_query_params.0.write().await = query_params.to_string();
+        if let Some(playback_session_id) = get_header_value(&req, "x-playback-session-id") {
+            log::info!("Saved user-defined query parameters: {query_params} for session {playback_session_id}");
+            user_defined_query_params.0.insert(
+                Uuid::parse_str(&playback_session_id).unwrap_or_default(),
+                query_params.to_string(),
+            );
+        }
     }
 
     Ok(HttpResponse::Ok()
@@ -764,7 +791,7 @@ async fn handle_status(
     let response = object! {
         "config": config.to_json(),
         "ad_server_url": ad_server_url.as_str(),
-        "user_defined_query_params": user_defined_query_params.0.read().await.to_string(),
+        "user_defined_query_params": user_defined_query_params.to_json(),
         "available_ads": available_ads.to_json(),
         "available_slots": available_slots.to_json(),
     }

@@ -108,3 +108,9 @@ pub fn get_query_param(req: &HttpRequest, key: &str) -> Option<String> {
             .map(|(_, v)| v.to_string())
     })
 }
+
+pub fn get_header_value(req: &HttpRequest, key: &str) -> Option<String> {
+    req.headers()
+        .get(key)
+        .and_then(|v| v.to_str().ok().map(|s| s.to_string()))
+}
