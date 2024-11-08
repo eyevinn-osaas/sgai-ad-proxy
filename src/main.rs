@@ -173,11 +173,11 @@ struct CliArguments {
     #[clap(short, long, value_enum, verbatim_doc_comment, default_value_t = InsertionMode::Static)]
     ad_insertion_mode: InsertionMode,
 
-    /// Base URL for interstitals (protocol://ip:port)
+    /// Base URL for interstitials (protocol://ip:port)
     /// If not provided, the server will use 'localhost' and the 'listen port' as the base URL
     /// e.g., http://localhost:${LISTEN_PORT}
     #[clap(short, long, verbatim_doc_comment, default_value_t = String::from(""))]
-    interstitals_address: String,
+    interstitials_address: String,
 }
 
 #[derive(ValueEnum, Clone, Debug, PartialEq)]
@@ -818,10 +818,10 @@ async fn main() -> io::Result<()> {
     let listen_url = format!("http://{}:{}", &args.listen_addr, &args.listen_port);
     let listen_url = Url::parse(&listen_url).expect("Invalid listen address");
 
-    let interstitials_address = if args.interstitals_address.is_empty() {
+    let interstitials_address = if args.interstitials_address.is_empty() {
         format!("http://localhost:{}", &args.listen_port)
     } else {
-        args.interstitals_address
+        args.interstitials_address
     };
     let interstitials_address =
         Url::parse(&interstitials_address).expect("Invalid interstitials address");

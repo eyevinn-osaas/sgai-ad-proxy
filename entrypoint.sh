@@ -14,4 +14,4 @@ fi
   ${ORIGIN_URL} \
   ${VAST_ENDPOINT} \
   --ad-insertion-mode ${INSERTION_MODE:-static} \
-  --interstitals-address https://${OSC_HOSTNAME}
+  --interstitials-address https://${OSC_HOSTNAME}
