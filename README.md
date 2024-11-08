@@ -32,12 +32,14 @@ python -m http.server 8001
 * A running instance of the [ad-server](https://github.com/Eyevinn/test-adserver).
 For example, one test ad server is available at <https://eyevinn-sgai.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/vast>
 
-* AVPlayer or any other video player that supports Server Guided Ad Insertion (SGAI)
+* AVPlayer or any other video player (e.g., [HLS.js v1.5.17+](https://hlsjs.video-dev.org/demo/)) that supports Server Guided Ad Insertion (SGAI).
 
 ```bash
 # Once the ad-proxy server is running (e.g., on port 3333), 
-# you can use AVPlayer to play the HLS stream
+# you can play the proxied HLS stream
 ```
+
+* (Optional) [CouchDB](https://docs.couchdb.org/en/latest/index.html) [instance](https://eyevinn-sgai.apache-couchdb.auto.prod.osaas.io) to store transcoded ads. With this, the ad-proxy server can fetch the ads' URL from a custom instance and use that in the JSON response for interstitials.
 
 ### Run
 
@@ -77,6 +79,12 @@ Options:
           Base URL for interstitials (protocol://ip:port)
           If not provided, the server will use 'localhost' and the 'listen port' as the base URL
           e.g., http://localhost:${LISTEN_PORT} [default: ]
+      --couchdb-endpoint <COUCHDB_ENDPOINT>
+          CouchDB endpoint (protocol://ip:port)
+          If provided, the server will connect to the CouchDB instance to fetch transcoded ads
+          'COUCHDB_USER' and 'COUCHDB_PASSWORD' environment variables should be set for authentication [default: ]
+      --couchdb-table <COUCHDB_TABLE>
+          CouchDB table name [default: transcoded_test_ads]
 ```
 
 ### Insert Ads
@@ -101,11 +109,11 @@ curl http://127.0.0.1:3333/status
 
 ### Ad personalization
 
-Ad personalization can be achieved by combining the following two methods:
+Instead of relying on personalized playlist, ad personalization can be achieved by using query parameters in:
 
-1. **Ad Server URL Query Parameters**: The ad server endpoint can include query parameters that will be dynamically replaced with actual values before sending the request. For example, in the ad server endpoint `https://eyevinn-sgai.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/vast?dur=[template.duration]&uid=[template.sessionId]&ps=[template.pod]&min=5&max=5`, the query parameters `dur`, `uid`, and `ps` will be replaced with actual values, while `min` and `max` will remain unchanged. These values apply to ad requests for **all** playback sessions.
+1. **Ad Server URL**: The ad server endpoint can include query parameters that will be dynamically replaced with actual values before sending the request. For example, in the ad server endpoint `https://eyevinn-sgai.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/vast?dur=[template.duration]&uid=[template.sessionId]&ps=[template.pod]&min=5&max=5`, the query parameters `dur`, `uid`, and `ps` will be replaced with actual values, while `min` and `max` will remain unchanged. These values apply to ad requests for **all** playback sessions.
 
-2. **Master Playlist URL Query Parameters**: The master playlist URL can include query parameters that will be forwarded to the ad server. For example, if a client initializes the playback with URL `http://127.0.0.1:3333/loop/master.m3u8?customString=abc`, the query parameter `customString` will be appended to the ad server request, resulting in `https://eyevinn-sgai.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/vast?dur=[template.duration]&uid=[template.sessionId]&ps=[template.pod]&min=5&max=5&customString=abc`. It is worth noting that this **only** applies to a specific playback session as AVPlayer and Safari support setting the 'X-PLAYBACK-SESSION-ID' request header and '_HLS_primary_id' query parameter of interstitial requests with a common, globally-unique value on every HTTP request associated with a particular playback session.
+2. **Master Playlist URL**: Player can use a custom master playlist URL which includes query parameters to be forwarded to the ad server. For example, if a client initializes the playback with URL `http://127.0.0.1:3333/loop/master.m3u8?customString=abc`, the query parameter `customString` will be appended to the ad server request, resulting in `https://eyevinn-sgai.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/vast?dur=[template.duration]&uid=[template.sessionId]&ps=[template.pod]&min=5&max=5&customString=abc`. It is worth noting that this **only** applies to a specific playback session as AVPlayer and Safari support setting the 'X-PLAYBACK-SESSION-ID' request header and '_HLS_primary_id' query parameter of interstitial requests with a common, globally-unique value on every HTTP request associated with a particular playback session.
 
 ### Example Modified Media Playlist
 
@@ -161,9 +169,8 @@ fileSequence18.ts
 
 * In order to place the interstitials at the correct timepoints, the origin media playlist must contain the `EXT-X-PROGRAM-DATE-TIME` tag. Otherwise, no interstitials will be inserted (the origin media playlist will be returned).
 * The creatives from ad server are mostly regular MPEG-4 files (ftyp+moov+mdat). While AVPlayer can handle regular MP4 files, other video player like hls.js can only handle fragmented MPEG-4 files (ftyp+moov+moof+mdat+moof+mdat+…). Therefore, it would fail to play out the interstitials.
-For better support, one might have to transcode the creatives to fragmented MPEG-4 or ts files first. Ideally, it is also suggested to transcode the creatives to multiple bitrates to support adaptive bitrate streaming.
+Ideally, raw MP4 creatives should be transcoded to fMP4 or TS files first. One can do that manually or use the [encore](https://github.com/svt/encore) to transocde them into HLS stream and store the URL in a CouchDB instance.
 * Joining the live stream during an ad break might pause the playback until the ad break is over.
-* Long-duration creatives (e.g., more than 15 seconds) from test ad server might be too large for AVPlayer to download. In such cases, the interstitials might be skipped.
 * The proxy server can only handle one HLS stream at a time. To switch streams, the server must be restarted.
 
 ## License (Apache-2.0)

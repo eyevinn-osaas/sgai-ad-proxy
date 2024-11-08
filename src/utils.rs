@@ -2,26 +2,39 @@ use actix_web::{HttpRequest, HttpResponseBuilder};
 use rustls::{ClientConfig, RootCertStore};
 use url::{ParseError, Url};
 
-pub fn get_all_linears_from_vast<'a>(vast: &'a vast4_rs::Vast<'a>) -> Vec<vast4_rs::Linear<'a>> {
+pub fn get_all_creatives_from_vast<'a>(
+    vast: &'a vast4_rs::Vast<'a>,
+) -> Vec<&vast4_rs::Creative<'a>> {
     let ads = &vast.ads;
     ads.iter()
         .flat_map(|ad| {
-            ad.in_line.iter().flat_map(|in_line| {
-                in_line
-                    .creatives
-                    .creatives
-                    .iter()
-                    .filter_map(|createve| createve.linear.clone())
-                    .filter(|linear| {
-                        let media_urls = get_media_urls_from_linear(linear);
-                        // Only return linears with mp4 media files.
-                        // This is a simple way to filter out bumpers (which end with '*_2023_P8_mp4').
-                        !media_urls.is_empty() && media_urls.first().unwrap().ends_with(".mp4")
-                    })
-                    .collect::<Vec<_>>()
-            })
+            ad.in_line
+                .iter()
+                .flat_map(|in_line| in_line.creatives.creatives.iter().collect::<Vec<_>>())
         })
         .collect::<Vec<_>>()
+}
+
+pub fn get_valid_creatives<'a>(
+    creatives: Vec<&'a vast4_rs::Creative<'a>>,
+) -> Vec<&'a vast4_rs::Creative<'a>> {
+    creatives
+        .into_iter()
+        // Only return creatives with adId and linear.
+        .filter(|creative| creative.ad_id.is_some() && creative.linear.is_some())
+        .filter(|creative| {
+            let media_urls = get_media_urls_from_linear(creative.linear.as_ref().unwrap());
+            // Only return linears with mp4 media files.
+            // This is a simple way to filter out bumpers (which end with '*_2023_P8_mp4').
+            !media_urls.is_empty() && media_urls.first().unwrap().ends_with(".mp4")
+        })
+        .collect::<Vec<_>>()
+}
+
+pub fn get_all_valid_creatives_from_vast<'a>(
+    vast: &'a vast4_rs::Vast<'a>,
+) -> Vec<&'a vast4_rs::Creative<'a>> {
+    get_valid_creatives(get_all_creatives_from_vast(vast))
 }
 
 pub fn get_duration_from_linear(linear: &vast4_rs::Linear) -> u64 {

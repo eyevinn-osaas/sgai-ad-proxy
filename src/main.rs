@@ -1,18 +1,25 @@
 mod utils;
 use utils::{
-    base_url, build_forward_url, copy_headers, fixed_offset_to_local, get_all_linears_from_vast,
-    get_duration_and_media_urls_from_linear, get_header_value, get_query_param, rustls_config,
+    base_url, build_forward_url, copy_headers, fixed_offset_to_local,
+    get_all_valid_creatives_from_vast, get_duration_and_media_urls_from_linear, get_header_value,
+    get_query_param, rustls_config,
 };
 
 use actix_web::{error, middleware, web, App, Error, HttpRequest, HttpResponse, HttpServer};
 use awc::{http::header, Client, Connector};
 use clap::{Parser, ValueEnum};
+use couch_rs::database::Database;
+use couch_rs::document::{DocumentCollection, TypedCouchDocument};
+use couch_rs::types::document::DocumentId;
+use couch_rs::types::find::FindQuery;
+use couch_rs::CouchDocument;
 use dashmap::{DashMap, DashSet};
 use hls_m3u8::tags::ExtXDateRange;
 use hls_m3u8::types::Value;
 use hls_m3u8::MediaPlaylist;
 use hls_m3u8::MediaSegment;
 use json::object;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::io;
@@ -50,8 +57,22 @@ enum RequestType {
     Other,
 }
 
+#[derive(Serialize, Deserialize, CouchDocument, Debug)]
+struct TranscodedAd {
+    // UniversalAdId from the VAST
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub _id: DocumentId,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub _rev: String,
+
+    name: Option<String>,
+    duration: u64,
+    url: String,
+}
+
 #[derive(Clone, Default)]
 struct Ad {
+    ad_id: Uuid,
     duration: u64,
     url: String,
     requested_at: chrono::DateTime<chrono::Local>,
@@ -178,6 +199,16 @@ struct CliArguments {
     /// e.g., http://localhost:${LISTEN_PORT}
     #[clap(short, long, verbatim_doc_comment, default_value_t = String::from(""))]
     interstitials_address: String,
+
+    /// CouchDB endpoint (protocol://ip:port)
+    /// If provided, the server will connect to the CouchDB instance to fetch transcoded ads
+    /// 'COUCHDB_USER' and 'COUCHDB_PASSWORD' environment variables should be set for authentication
+    #[clap(long, verbatim_doc_comment, default_value_t = String::from(""))]
+    couchdb_endpoint: String,
+
+    /// CouchDB table name
+    #[clap(long, verbatim_doc_comment, default_value_t = String::from("transcoded_test_ads"))]
+    couchdb_table: String,
 }
 
 #[derive(ValueEnum, Clone, Debug, PartialEq)]
@@ -338,39 +369,90 @@ async fn build_ad_server_url(
     Ok(updated_ad_server_url)
 }
 
+fn make_new_ad_from_transcoded_ad(transcoded_ad: &TranscodedAd) -> Ad {
+    let ad_id = Uuid::parse_str(&transcoded_ad._id).unwrap_or_default();
+    let duration = transcoded_ad.duration;
+    let url = transcoded_ad.url.clone();
+
+    Ad {
+        ad_id,
+        duration,
+        url,
+        requested_at: chrono::Local::now(),
+    }
+}
+
+fn make_new_ad_from_linear(linear: &vast4_rs::Linear) -> Ad {
+    let (duration, urls) = get_duration_and_media_urls_from_linear(linear);
+    let url = urls.first().unwrap().clone();
+    let ad_id = Uuid::new_v4();
+
+    Ad {
+        ad_id,
+        duration,
+        url,
+        requested_at: chrono::Local::now(),
+    }
+}
+
 fn build_ad_response(
     vast: vast4_rs::Vast,
     req_url: Url,
     interstitial_id: &str,
     user_id: &str,
+    transcoded_ads: &Vec<TranscodedAd>,
     available_ads: web::Data<AvailableAds>,
 ) -> String {
     // Get all linears (regular MP4s) from the VAST
-    let linears = get_all_linears_from_vast(&vast);
+    let valid_creatives = get_all_valid_creatives_from_vast(&vast);
+
     let mut accumulated_duration = 0;
-    let assets = linears
+    let assets = valid_creatives
         .iter()
-        .map(|linear| {
-            let linear_id = Uuid::new_v4();
-            let (duration, urls) = get_duration_and_media_urls_from_linear(linear);
-            let ad = Ad {
-                duration,
-                url: urls.first().unwrap().clone(),
-                requested_at: chrono::Local::now(),
-            };
-            // Transform the linears into ads and save them for follow-up requests
-            available_ads.linears.insert(linear_id, ad);
+        .map(|creative| {
+            let ad_id = creative
+                // Use the UniversalAdId if available, otherwise use the ad_id
+                .universal_ad_id
+                .first()
+                .map(|id| id.id.clone())
+                .unwrap_or(creative.ad_id.as_deref().unwrap_or("unknown").into());
+
+            log::info!("Processing ad {ad_id}");
+            // Check if this ad has been transcoded
+            let transcoded_ad = transcoded_ads.iter().find(|ad| ad._id == ad_id);
+
+            // If the ad has been transcoded, use the transcoded version
+            let ad = transcoded_ad
+                .inspect(|ad| {
+                    log::info!("Using transcoded ad {:?}", ad);
+                })
+                .map(|ad| make_new_ad_from_transcoded_ad(ad))
+                // Otherwise, use the original MP4
+                .unwrap_or_else(|| make_new_ad_from_linear(creative.linear.as_ref().unwrap()));
+
+            let duration = ad.duration;
+            let id = ad.ad_id;
+            // For transcoded ads, this points to a m3u8 playlist containing the fMP4s
+            // Otherwise, this points to a MP4 file
+            let ad_url = ad.url.clone();
+
+            // Save the ad for follow-up requests (this applies to not-transcoded ads)
+            available_ads.linears.insert(id, ad);
 
             let start_offset = accumulated_duration;
             accumulated_duration += duration;
 
-            let mut url = req_url.clone();
+            let mut url = if transcoded_ad.is_some() {
+                url::Url::parse(&ad_url).expect("Invalid transcoded ad URL")
+            } else {
+                req_url.clone()
+            };
             url.query_pairs_mut()
                 .clear()
                 .append_pair(HLS_INTERSTITIAL_ID, interstitial_id)
                 .append_pair(HLS_PRIMARY_ID, user_id)
                 .append_pair(HLS_START_OFFSET, &start_offset.to_string())
-                .append_pair(HLS_FOLLOW_ID, &linear_id.to_string());
+                .append_pair(HLS_FOLLOW_ID, &id.to_string());
 
             object! {
                 URI: url.as_str(),
@@ -594,6 +676,7 @@ async fn handle_interstitials(
     available_slots: web::Data<AvailableAdSlots>,
     client: web::Data<Client>,
     user_defined_query_params: web::Data<UserDefinedQueryParams>,
+    couch_db: web::Data<Option<Database>>,
 ) -> Result<HttpResponse, Error> {
     let ad_server_url = ad_server_url.clone();
     let req_url = req.full_url();
@@ -635,7 +718,21 @@ async fn handle_interstitials(
         // Return an empty VAST in case of parsing error
         .unwrap_or_default();
 
-    let response = build_ad_response(vast, req_url, &interstitial_id, &user_id, available_ads);
+    // Fetch transcoded ads from the database if available
+    let transcoded_ads = if let Some(db) = couch_db.as_ref() {
+        get_ad_from_db(db).await
+    } else {
+        Vec::new()
+    };
+
+    let response = build_ad_response(
+        vast,
+        req_url,
+        &interstitial_id,
+        &user_id,
+        &transcoded_ads,
+        available_ads,
+    );
     log::info!("asset json reply \n{response}");
 
     Ok(HttpResponse::Ok()
@@ -802,6 +899,37 @@ async fn handle_status(
         .body(response))
 }
 
+async fn try_connect_to_couchdb(database_url: &str, table: &str) -> Option<Database> {
+    if database_url.is_empty() || table.is_empty() {
+        return None;
+    }
+
+    let (user, password) = (
+        std::env::var("COUCHDB_USER"),
+        std::env::var("COUCHDB_PASSWORD"),
+    );
+
+    match (user, password) {
+        (Ok(user), Ok(password)) => {
+            let couch_rs_client = couch_rs::Client::new(database_url, &user, &password)
+                .expect("Failed to login to CouchDB. Please check your credentials.");
+            let db = couch_rs_client
+                .db(table)
+                .await
+                .ok()
+                .expect("Failed to join table");
+            Some(db)
+        }
+        _ => None,
+    }
+}
+
+async fn get_ad_from_db(db: &Database) -> Vec<TranscodedAd> {
+    let find_all = FindQuery::find_all();
+    let docs: DocumentCollection<TranscodedAd> = db.find(&find_all).await.unwrap_or_default();
+    docs.rows
+}
+
 #[actix_web::main]
 async fn main() -> io::Result<()> {
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
@@ -845,10 +973,12 @@ async fn main() -> io::Result<()> {
         args.ad_insertion_mode,
     );
     let user_defined_query_params = UserDefinedQueryParams::default();
+    let data_base = try_connect_to_couchdb(&args.couchdb_endpoint, &args.couchdb_table).await;
+
     HttpServer::new(move || {
         let cors = actix_cors::Cors::permissive();
 
-        // create client inside `HttpServer::new` closure to have one per worker thread
+        // create https client inside `HttpServer::new` closure to have one per worker thread
         let client = Client::builder()
             // Freewheel requires a User-Agent header to make requests
             .add_default_header((header::USER_AGENT, "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0.1 Safari/605.1.15"))
@@ -863,6 +993,7 @@ async fn main() -> io::Result<()> {
             .app_data(web::Data::new(server_config.clone()))
             .app_data(web::Data::new(ad_server_url.clone()))
             .app_data(web::Data::new(user_defined_query_params.clone()))
+            .app_data(web::Data::new(data_base.clone()))
             .wrap(middleware::Logger::default())
             .wrap(cors)
             .route(COMMAND_PREFIX, web::get().to(handle_commands))
