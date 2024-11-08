@@ -168,8 +168,8 @@ struct CliArguments {
     ad_server_endpoint: String,
 
     /// Ad insertion mode to use:
-    /// 1) static  - add intertistial every 30 seconds (100 in total).
-    /// 2) dynamic - add intertistial when requested (Live Content only).
+    /// 1) static  - add interstitial every 30 seconds (100 in total).
+    /// 2) dynamic - add interstitial when requested (Live Content only).
     #[clap(short, long, value_enum, verbatim_doc_comment, default_value_t = InsertionMode::Static)]
     ad_insertion_mode: InsertionMode,
 
@@ -478,7 +478,7 @@ fn insert_interstitials(
         .collect();
 
     // Match the ad slots with the segments
-    let intetstitials: Vec<_> = program_date_time_list
+    let interstitials: Vec<_> = program_date_time_list
         .iter()
         .enumerate()
         .filter_map(|(index, (program_date_time, duration))| {
@@ -529,7 +529,7 @@ fn insert_interstitials(
         })
         .collect();
 
-    for (index, date_range) in intetstitials {
+    for (index, date_range) in interstitials {
         if let Some(date_range) = date_range {
             segments.get_mut(index).unwrap().date_range = Some(date_range);
         }
@@ -829,7 +829,7 @@ async fn main() -> io::Result<()> {
     let ad_server_url = Url::parse(&args.ad_server_endpoint).unwrap();
 
     log::info!("Program started at: {:?}", *START_TIME);
-    log::info!("Starting HTTP server at {listen_url}, fowarding to {forward_url}, interstials' base URL: {interstitials_address}");
+    log::info!("Starting HTTP server at {listen_url}, forwarding to {forward_url}, interstitials' base URL: {interstitials_address}");
     log::info!(
         "Ad server endpoint: {ad_server_url}, {:?} insertion",
         args.ad_insertion_mode.to_str()

@@ -71,8 +71,8 @@ Arguments:
 Options:
   -a, --ad-insertion-mode <AD_INSERTION_MODE>
           Ad insertion mode to use:
-          1) static  - add intertistial every 30 seconds (100 in total).
-          2) dynamic - add intertistial when requested (Live Content only). [default: static] [possible values: static, dynamic]
+          1) static  - add interstitial every 30 seconds (100 in total).
+          2) dynamic - add interstitial when requested (Live Content only). [default: static] [possible values: static, dynamic]
   -i, --interstitials-address <INTERSTITALS_ADDRESS>
           Base URL for interstitials (protocol://ip:port)
           If not provided, the server will use 'localhost' and the 'listen port' as the base URL
