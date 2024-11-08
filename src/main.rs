@@ -903,6 +903,7 @@ async fn try_connect_to_couchdb(database_url: &str, table: &str) -> Option<Datab
     if database_url.is_empty() || table.is_empty() {
         return None;
     }
+    log::info!("Connecting to CouchDB at {database_url} with table {table}");
 
     let (user, password) = (
         std::env::var("COUCHDB_USER"),
@@ -920,7 +921,10 @@ async fn try_connect_to_couchdb(database_url: &str, table: &str) -> Option<Datab
                 .expect("Failed to join table");
             Some(db)
         }
-        _ => None,
+        _ => {
+            log::warn!("Missing 'COUCHDB_USER' or 'COUCHDB_PASSWORD' environment variables");
+            None
+        }
     }
 }
 
