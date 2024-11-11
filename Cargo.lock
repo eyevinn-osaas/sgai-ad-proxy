@@ -273,6 +273,7 @@ dependencies = [
  "chrono",
  "clap",
  "color-eyre",
+ "couch_rs",
  "dash-mpd",
  "dashmap 6.1.0",
  "dotenvy",
@@ -873,6 +874,39 @@ name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
+
+[[package]]
+name = "couch_rs"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c58e035c1863a37f8f8443efe9b70c5c7570903b2d4ddd5cc9d4c6b89f0670cd"
+dependencies = [
+ "base64",
+ "bytes",
+ "couch_rs_derive",
+ "futures-core",
+ "futures-util",
+ "http 1.1.0",
+ "percent-encoding",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "url",
+]
+
+[[package]]
+name = "couch_rs_derive"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52b717810a1bab636c8249cfe37734b6d0b96ea76ff7925d2b32860b78cd0fe3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.82",
+]
 
 [[package]]
 name = "cpufeatures"
