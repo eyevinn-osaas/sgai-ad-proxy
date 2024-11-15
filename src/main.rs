@@ -2,7 +2,7 @@ mod utils;
 use utils::{
     base_url, build_forward_url, copy_headers, fixed_offset_to_local,
     get_all_valid_creatives_from_vast, get_duration_and_media_urls_from_linear, get_header_value,
-    get_query_param, rustls_config,
+    get_query_param, is_media_segment, rustls_config,
 };
 
 use actix_web::{error, middleware, web, App, Error, HttpRequest, HttpResponse, HttpServer};
@@ -296,7 +296,7 @@ fn get_request_type(req: &HttpRequest, config: &web::Data<ServerConfig>) -> Requ
     let path = req.uri().path();
     if path.contains(config.master_playlist_path.as_str()) {
         return RequestType::MasterPlayList;
-    } else if path.contains(".ts") || path.contains(".cmf") || path.contains(".mp") {
+    } else if is_media_segment(path) {
         return RequestType::Segment;
     } else if path.contains(".m3u8") {
         return RequestType::MediaPlayList;
