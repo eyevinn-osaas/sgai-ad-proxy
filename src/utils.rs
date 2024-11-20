@@ -24,9 +24,9 @@ pub fn get_valid_creatives<'a>(
         .filter(|creative| creative.ad_id.is_some() && creative.linear.is_some())
         .filter(|creative| {
             let media_urls = get_media_urls_from_linear(creative.linear.as_ref().unwrap());
-            // Only return linears with mp4 media files.
+            // Only return linears with valid media files.
             // This is a simple way to filter out bumpers (which end with '*_2023_P8_mp4').
-            !media_urls.is_empty() && media_urls.first().unwrap().ends_with(".mp4")
+            !media_urls.is_empty() && is_media_segment(media_urls.first().unwrap())
         })
         .collect::<Vec<_>>()
 }
@@ -86,6 +86,16 @@ pub fn parse_date_time(
         .or_else(|_| chrono::DateTime::parse_from_str(date_time, default_date_time_format));
 
     date_time
+}
+
+pub fn date_time_to_string(date_time: &chrono::DateTime<chrono::Local>) -> String {
+    date_time.to_rfc3339_opts(chrono::SecondsFormat::Millis, false)
+}
+
+pub fn make_program_date_time_tag(
+    date_time: &chrono::DateTime<chrono::Local>,
+) -> hls_m3u8::tags::ExtXProgramDateTime<'static> {
+    hls_m3u8::tags::ExtXProgramDateTime::new(date_time_to_string(date_time))
 }
 
 /// Create simple rustls client config from root certificates.

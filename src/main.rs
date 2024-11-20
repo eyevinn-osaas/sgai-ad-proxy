@@ -2,7 +2,7 @@ mod utils;
 use utils::{
     base_url, build_forward_url, copy_headers, fixed_offset_to_local,
     get_all_valid_creatives_from_vast, get_duration_and_media_urls_from_linear, get_header_value,
-    get_query_param, is_media_segment, parse_date_time, rustls_config,
+    get_query_param, is_media_segment, make_program_date_time_tag, parse_date_time, rustls_config,
 };
 
 use actix_web::{error, middleware, web, App, Error, HttpRequest, HttpResponse, HttpServer};
@@ -514,9 +514,7 @@ fn insert_interstitials(
         // Use server start time as the program_date_time for the first segment
         segments.find_first_mut().and_then(|first_segment| {
             // Add to the playlist
-            first_segment.program_date_time = Some(hls_m3u8::tags::ExtXProgramDateTime::new(
-                (*START_TIME).to_rfc3339(),
-            ));
+            first_segment.program_date_time = Some(make_program_date_time_tag(&START_TIME));
 
             // Update the optional
             first_program_date_time = Some(*START_TIME);
@@ -611,6 +609,13 @@ fn insert_interstitials(
             "Segment {index} starts at {program_date_time} and lasts for {:?}",
             duration
         );
+
+        // If a segment has a discontinuity tag but no program_date_time, insert one
+        let seg = segments.get_mut(index).unwrap();
+        if seg.has_discontinuity && seg.program_date_time.is_none() {
+            let program_date_time_tag = make_program_date_time_tag(program_date_time);
+            seg.program_date_time = Some(program_date_time_tag);
+        }
     }
 
     // Match the ad slots with the segments
@@ -765,7 +770,7 @@ async fn handle_interstitials(
 
     let payload = res.body().await.map_err(error::ErrorInternalServerError)?;
     let xml = std::str::from_utf8(&payload).unwrap();
-    log::debug!("xml \n{:?}", xml);
+    log::debug!("VAST response from ad server \n{:?}", xml);
     let vast: vast4_rs::Vast = vast4_rs::from_str(&xml)
         .inspect_err(|err| {
             log::error!("Error parsing VAST: {:?}", err);
@@ -825,7 +830,7 @@ async fn handle_follow_up_request(
         .has_end_list(true)
         .build()
         .inspect(|m3u8| {
-            log::debug!("m3u8 \n{m3u8}");
+            log::debug!("creative playlist \n{m3u8}");
         })
         .unwrap();
 
@@ -904,7 +909,15 @@ async fn handle_media_playlist(
 
     let payload = res.body().await.map_err(error::ErrorInternalServerError)?;
     let manifest = std::str::from_utf8(&payload).unwrap();
-    let mut m3u8 = MediaPlaylist::try_from(manifest).unwrap();
+    let mut m3u8 = MediaPlaylist::try_from(manifest)
+        .inspect_err(|err| {
+            log::error!(
+                "Error {:?} when parsing media playlist:\n {:?}",
+                err,
+                manifest
+            );
+        })
+        .map_err(error::ErrorInternalServerError)?;
 
     insert_interstitials(&mut m3u8, &config, available_slots);
     log::debug!("m3u8 \n{m3u8}");
