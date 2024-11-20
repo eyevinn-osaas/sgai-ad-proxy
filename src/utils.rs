@@ -66,10 +66,26 @@ pub fn get_duration_and_media_urls_from_linear(linear: &vast4_rs::Linear) -> (u6
     )
 }
 
+pub fn is_media_segment(path: &str) -> bool {
+    path.contains(".ts") || path.contains(".cmf") || path.contains(".mp") || path.contains(".m4s")
+}
+
 pub fn fixed_offset_to_local(
     date: chrono::DateTime<chrono::FixedOffset>,
 ) -> chrono::DateTime<chrono::Local> {
     date.with_timezone(&chrono::Local)
+}
+
+pub fn parse_date_time(
+    date_time: &str,
+) -> chrono::ParseResult<chrono::DateTime<chrono::FixedOffset>> {
+    let default_date_time_format = "%Y-%m-%dT%H:%M:%S%.3f%z";
+
+    let date_time = chrono::DateTime::parse_from_rfc3339(date_time)
+        .or_else(|_| chrono::DateTime::parse_from_rfc2822(date_time))
+        .or_else(|_| chrono::DateTime::parse_from_str(date_time, default_date_time_format));
+
+    date_time
 }
 
 /// Create simple rustls client config from root certificates.
