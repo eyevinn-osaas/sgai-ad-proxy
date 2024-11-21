@@ -38,6 +38,7 @@ const SESSION_ID_TEMPLATE: &str = "[template.sessionId]";
 const DURATION_TEMPLATE: &str = "[template.duration]";
 const POD_NUM_TEMPLATE: &str = "[template.pod]";
 
+const HLS_PLAYLIST_CONTENT_TYPE: &str = "application/vnd.apple.mpegurl";
 const HLS_INTERSTITIAL_ID: &str = "_HLS_interstitial_id";
 const HLS_PRIMARY_ID: &str = "_HLS_primary_id";
 const HLS_START_OFFSET: &str = "_HLS_start_offset";
@@ -856,7 +857,7 @@ async fn handle_follow_up_request(
         .unwrap();
 
     Ok(HttpResponse::Ok()
-        .content_type("application/vnd.apple.mpegurl")
+        .content_type(HLS_PLAYLIST_CONTENT_TYPE)
         .body(m3u8.to_string()))
 }
 
@@ -910,13 +911,17 @@ async fn handle_master_playlist(
     let payload = res.body().await.map_err(error::ErrorInternalServerError)?;
     let m3u8 = std::str::from_utf8(&payload).map_err(error::ErrorInternalServerError)?;
     let playlist = MasterPlaylist::try_from(m3u8).inspect_err(|err| {
-        log::error!("Error {:?} when parsing master playlist:\n {:?}", err, m3u8);
+        log::error!(
+            "Error {:?} when parsing master playlist. Returning the original playlist.",
+            err.to_string()
+        );
     });
 
     if playlist.is_err() {
         // Just pass the original payload in case of parsing error
-        let mut client_resp = HttpResponse::build(res.status());
-        return Ok(client_resp.streaming(res));
+        return Ok(HttpResponse::Ok()
+            .content_type(HLS_PLAYLIST_CONTENT_TYPE)
+            .body(payload));
     }
 
     let mut playlist = playlist.unwrap();
@@ -924,7 +929,7 @@ async fn handle_master_playlist(
     log::debug!("master playlist \n{playlist}");
 
     Ok(HttpResponse::Ok()
-        .content_type("application/vnd.apple.mpegurl")
+        .content_type(HLS_PLAYLIST_CONTENT_TYPE)
         .body(playlist.to_string()))
 }
 
@@ -945,13 +950,17 @@ async fn handle_media_playlist(
     let payload = res.body().await.map_err(error::ErrorInternalServerError)?;
     let m3u8 = std::str::from_utf8(&payload).map_err(error::ErrorInternalServerError)?;
     let playlist = MediaPlaylist::try_from(m3u8).inspect_err(|err| {
-        log::error!("Error {:?} when parsing media playlist:\n {:?}", err, m3u8);
+        log::error!(
+            "Error {:?} when parsing media playlist. Returning the original playlist.",
+            err.to_string()
+        );
     });
 
     if playlist.is_err() {
         // Just pass the original payload in case of parsing error
-        let mut client_resp = HttpResponse::build(res.status());
-        return Ok(client_resp.streaming(res));
+        return Ok(HttpResponse::Ok()
+            .content_type(HLS_PLAYLIST_CONTENT_TYPE)
+            .body(payload.clone()));
     }
 
     let mut playlist = playlist.unwrap();
@@ -959,7 +968,7 @@ async fn handle_media_playlist(
     log::debug!("media playlist \n{playlist}");
 
     Ok(HttpResponse::Ok()
-        .content_type("application/vnd.apple.mpegurl")
+        .content_type(HLS_PLAYLIST_CONTENT_TYPE)
         .body(playlist.to_string()))
 }
 
