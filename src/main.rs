@@ -14,10 +14,9 @@ use couch_rs::types::document::DocumentId;
 use couch_rs::types::find::FindQuery;
 use couch_rs::CouchDocument;
 use dashmap::{DashMap, DashSet};
-use hls_m3u8::tags::ExtXDateRange;
+use hls_m3u8::tags::{ExtXDateRange, VariantStream};
 use hls_m3u8::types::Value;
-use hls_m3u8::MediaPlaylist;
-use hls_m3u8::MediaSegment;
+use hls_m3u8::{MasterPlaylist, MediaPlaylist, MediaSegment};
 use json::object;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -467,6 +466,28 @@ fn build_ad_response(
     .pretty(2)
 }
 
+fn replace_absolute_url_with_relative_url(m3u8: &mut MasterPlaylist) {
+    m3u8.variant_streams.iter_mut().for_each(|variant| {
+        // Skip iframe playlists
+
+        if let VariantStream::ExtXStreamInf { uri, .. } = variant {
+            if !uri.starts_with("http") {
+                // Relative URIs
+                return;
+            }
+
+            // Replace the absolute URI by their relative path
+            let absolute_media_playlist_url = Url::parse(&uri).expect("Invalid media playlist URI");
+            let mut relative_url = absolute_media_playlist_url.path().to_string();
+            if let Some(query) = absolute_media_playlist_url.query() {
+                relative_url.push_str(query);
+            }
+
+            *uri = relative_url.into();
+        }
+    });
+}
+
 fn insert_interstitials(
     m3u8: &mut MediaPlaylist,
     config: &web::Data<ServerConfig>,
@@ -875,8 +896,6 @@ async fn handle_master_playlist(
         .await
         .map_err(error::ErrorInternalServerError)?;
 
-    let payload = res.body().await.map_err(error::ErrorInternalServerError)?;
-
     // Save the user-defined query parameters for later use
     if let Some(query_params) = req.uri().query() {
         if let Some(playback_session_id) = get_header_value(&req, "x-playback-session-id") {
@@ -888,9 +907,24 @@ async fn handle_master_playlist(
         }
     }
 
+    let payload = res.body().await.map_err(error::ErrorInternalServerError)?;
+    let playlist = std::str::from_utf8(&payload).map_err(error::ErrorInternalServerError)?;
+    let mut m3u8 = MasterPlaylist::try_from(playlist)
+        .inspect_err(|err| {
+            log::error!(
+                "Error {:?} when parsing master playlist:\n {:?}",
+                err,
+                playlist
+            );
+        })
+        .map_err(error::ErrorInternalServerError)?;
+
+    replace_absolute_url_with_relative_url(&mut m3u8);
+    log::debug!("master playlist \n{m3u8}");
+
     Ok(HttpResponse::Ok()
         .content_type("application/vnd.apple.mpegurl")
-        .body(payload))
+        .body(m3u8.to_string()))
 }
 
 async fn handle_media_playlist(
@@ -908,19 +942,20 @@ async fn handle_media_playlist(
         .map_err(error::ErrorInternalServerError)?;
 
     let payload = res.body().await.map_err(error::ErrorInternalServerError)?;
-    let manifest = std::str::from_utf8(&payload).unwrap();
-    let mut m3u8 = MediaPlaylist::try_from(manifest)
+    let playlist = std::str::from_utf8(&payload).map_err(error::ErrorInternalServerError)?;
+    let mut m3u8 = MediaPlaylist::try_from(playlist)
         .inspect_err(|err| {
             log::error!(
                 "Error {:?} when parsing media playlist:\n {:?}",
                 err,
-                manifest
+                playlist
             );
         })
         .map_err(error::ErrorInternalServerError)?;
 
+    // By this point, we should have a valid media playlist
     insert_interstitials(&mut m3u8, &config, available_slots);
-    log::debug!("m3u8 \n{m3u8}");
+    log::debug!("media playlist \n{m3u8}");
 
     Ok(HttpResponse::Ok()
         .content_type("application/vnd.apple.mpegurl")
