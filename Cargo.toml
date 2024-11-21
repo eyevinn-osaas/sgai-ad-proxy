@@ -1,9 +1,12 @@
 [package]
 name = "ad_proxy"
-description = "Server Guided Ad Insertion"
-version = "0.1.0"
+description = "Server Guided Ad Insertion Proxy"
+repository = "https://github.com/Eyevinn/sgai-ad-proxy"
+version = "1.0.0"
 edition = "2021"
-authors = ["Kun Wu <kun.wu@eyevinn.se>"]
+authors = ["Kun Wu <kun.wu@eyevinn.se>; Jonas Birmé <jonas.birme@eyevinn.se>"]
+exclude = ["docs/*"]
+rust-version = "1.76"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -32,7 +35,7 @@ actix-web = { version = "4.9.0", features = ["openssl"] }
 actix-http = "3.9.0"
 actix-cors = "0.7.0"
 
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4.5.21", features = ["derive"] }
 chrono = { version = "0.4.30", features = ["serde"] }
 # derive_more = "1.0.0"
 dotenvy = "0.15"
@@ -51,10 +54,10 @@ parking_lot = "0.12"
 pin-project-lite = "0.2.15"
 rand = "0.8"
 reqwest = { version = "0.12", features = ["json", "stream"] }
-rustls = "0.23"
+rustls = "0.23.17"
 rustls-pemfile = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = "1.0"
 time = "0.3"
 tokio = { version = "1.41.1", features = ["sync", "io-util"] }
 tokio-util = "0.7.4"
