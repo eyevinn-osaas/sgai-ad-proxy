@@ -908,23 +908,24 @@ async fn handle_master_playlist(
     }
 
     let payload = res.body().await.map_err(error::ErrorInternalServerError)?;
-    let playlist = std::str::from_utf8(&payload).map_err(error::ErrorInternalServerError)?;
-    let mut m3u8 = MasterPlaylist::try_from(playlist)
-        .inspect_err(|err| {
-            log::error!(
-                "Error {:?} when parsing master playlist:\n {:?}",
-                err,
-                playlist
-            );
-        })
-        .map_err(error::ErrorInternalServerError)?;
+    let m3u8 = std::str::from_utf8(&payload).map_err(error::ErrorInternalServerError)?;
+    let playlist = MasterPlaylist::try_from(m3u8).inspect_err(|err| {
+        log::error!("Error {:?} when parsing master playlist:\n {:?}", err, m3u8);
+    });
 
-    replace_absolute_url_with_relative_url(&mut m3u8);
-    log::debug!("master playlist \n{m3u8}");
+    if playlist.is_err() {
+        // Just pass the original payload in case of parsing error
+        let mut client_resp = HttpResponse::build(res.status());
+        return Ok(client_resp.streaming(res));
+    }
+
+    let mut playlist = playlist.unwrap();
+    replace_absolute_url_with_relative_url(&mut playlist);
+    log::debug!("master playlist \n{playlist}");
 
     Ok(HttpResponse::Ok()
         .content_type("application/vnd.apple.mpegurl")
-        .body(m3u8.to_string()))
+        .body(playlist.to_string()))
 }
 
 async fn handle_media_playlist(
@@ -942,24 +943,24 @@ async fn handle_media_playlist(
         .map_err(error::ErrorInternalServerError)?;
 
     let payload = res.body().await.map_err(error::ErrorInternalServerError)?;
-    let playlist = std::str::from_utf8(&payload).map_err(error::ErrorInternalServerError)?;
-    let mut m3u8 = MediaPlaylist::try_from(playlist)
-        .inspect_err(|err| {
-            log::error!(
-                "Error {:?} when parsing media playlist:\n {:?}",
-                err,
-                playlist
-            );
-        })
-        .map_err(error::ErrorInternalServerError)?;
+    let m3u8 = std::str::from_utf8(&payload).map_err(error::ErrorInternalServerError)?;
+    let playlist = MediaPlaylist::try_from(m3u8).inspect_err(|err| {
+        log::error!("Error {:?} when parsing media playlist:\n {:?}", err, m3u8);
+    });
 
-    // By this point, we should have a valid media playlist
-    insert_interstitials(&mut m3u8, &config, available_slots);
-    log::debug!("media playlist \n{m3u8}");
+    if playlist.is_err() {
+        // Just pass the original payload in case of parsing error
+        let mut client_resp = HttpResponse::build(res.status());
+        return Ok(client_resp.streaming(res));
+    }
+
+    let mut playlist = playlist.unwrap();
+    insert_interstitials(&mut playlist, &config, available_slots);
+    log::debug!("media playlist \n{playlist}");
 
     Ok(HttpResponse::Ok()
         .content_type("application/vnd.apple.mpegurl")
-        .body(m3u8.to_string()))
+        .body(playlist.to_string()))
 }
 
 async fn handle_segment(
