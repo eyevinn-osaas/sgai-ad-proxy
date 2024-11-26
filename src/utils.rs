@@ -66,6 +66,68 @@ pub fn get_duration_and_media_urls_from_linear(linear: &vast4_rs::Linear) -> (u6
     )
 }
 
+pub fn find_program_datetime_tag(
+    playlist: &hls_m3u8::MediaPlaylist,
+) -> Option<chrono::DateTime<chrono::Local>> {
+    playlist
+        .segments
+        .iter()
+        .find_map(|(_, segment)| segment.program_date_time.as_ref())
+        .and_then(|program_date_time| {
+            let date_str = program_date_time.date_time.as_ref();
+            parse_date_time(date_str)
+                // Ignore invalid date times
+                .map_err(|_| log::error!("Invalid date time: {}", date_str))
+                .ok()
+        })
+        .map(fixed_offset_to_local)
+        .inspect(|program_date_time| {
+            log::debug!(
+                "First available program_date_time in local timezone: {:?}",
+                program_date_time
+            );
+        })
+}
+
+pub fn calculate_expected_program_date_time_list(
+    segments: &hls_m3u8::stable_vec::StableVec<hls_m3u8::MediaSegment>,
+    first_program_date_time: chrono::DateTime<chrono::Local>,
+) -> Vec<(chrono::DateTime<chrono::Local>, std::time::Duration)> {
+    let mut current_program_date_time = first_program_date_time;
+    let mut accumulated_segment_duration_ms = 0u128;
+
+    segments
+        .iter()
+        .map(|(_, segment)| {
+            let optional_program_date_time = segment
+                .program_date_time
+                .as_ref()
+                .and_then(|program_date_time| {
+                    let date_str = program_date_time.date_time.as_ref();
+                    parse_date_time(date_str)
+                        .map_err(|_| log::error!("Invalid date time: {}", date_str))
+                        .ok()
+                })
+                .map(fixed_offset_to_local);
+
+            let segment_duration = segment.duration.duration();
+
+            if let Some(program_date_time) = optional_program_date_time {
+                current_program_date_time = program_date_time;
+                accumulated_segment_duration_ms = segment_duration.as_millis();
+
+                (program_date_time, segment_duration)
+            } else {
+                let expected_date_time = current_program_date_time
+                    + chrono::Duration::milliseconds(accumulated_segment_duration_ms as i64);
+                accumulated_segment_duration_ms += segment_duration.as_millis();
+
+                (expected_date_time, segment_duration)
+            }
+        })
+        .collect()
+}
+
 pub fn is_media_segment(path: &str) -> bool {
     path.contains(".ts") || path.contains(".cmf") || path.contains(".mp") || path.contains(".m4s")
 }

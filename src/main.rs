@@ -1,8 +1,9 @@
 mod utils;
 use utils::{
-    base_url, build_forward_url, copy_headers, fixed_offset_to_local,
-    get_all_valid_creatives_from_vast, get_duration_and_media_urls_from_linear, get_header_value,
-    get_query_param, is_media_segment, make_program_date_time_tag, parse_date_time, rustls_config,
+    base_url, build_forward_url, calculate_expected_program_date_time_list, copy_headers,
+    find_program_datetime_tag, get_all_valid_creatives_from_vast,
+    get_duration_and_media_urls_from_linear, get_header_value, get_query_param, is_media_segment,
+    make_program_date_time_tag, rustls_config,
 };
 
 use actix_web::{error, middleware, web, App, Error, HttpRequest, HttpResponse, HttpServer};
@@ -489,6 +490,22 @@ fn replace_absolute_url_with_relative_url(m3u8: &mut MasterPlaylist) {
     });
 }
 
+fn generate_static_ad_slots(date_time: chrono::DateTime<chrono::Local>) -> Vec<AdSlot> {
+    (1..DEFAULT_AD_NUMBER)
+        .map(|i| {
+            let seconds = i * 30;
+            let start_time = date_time + chrono::Duration::seconds(seconds);
+            AdSlot {
+                id: Uuid::new_v4(),
+                index: i as u64,
+                start_time: start_time,
+                duration: DEFAULT_AD_DURATION,
+                pod_num: 2,
+            }
+        })
+        .collect()
+}
+
 fn insert_interstitials(
     m3u8: &mut MediaPlaylist,
     config: &web::Data<ServerConfig>,
@@ -496,25 +513,9 @@ fn insert_interstitials(
 ) {
     let interstitials_address = &config.interstitials_address;
     let ad_insert_mode = &config.insertion_mode;
-    let segments = &mut m3u8.segments;
 
-    let mut first_program_date_time = segments
-        .iter()
-        .find_map(|(_, segment)| segment.program_date_time.as_ref())
-        .and_then(|program_date_time| {
-            let date_str = program_date_time.date_time.as_ref();
-            parse_date_time(date_str)
-                // Ignore invalid date times
-                .map_err(|_| log::error!("Invalid date time: {}", date_str))
-                .ok()
-        })
-        .map(fixed_offset_to_local)
-        .inspect(|program_date_time| {
-            log::debug!(
-                "First available program_date_time in local timezone: {:?}",
-                program_date_time
-            );
-        });
+    let mut first_program_date_time = find_program_datetime_tag(&m3u8);
+    let segments = &mut m3u8.segments;
 
     let is_vod = m3u8
         .playlist_type
@@ -550,31 +551,20 @@ fn insert_interstitials(
     }
 
     // By this point, we should have a valid program_date_time
+    let first_program_date_time = first_program_date_time.expect("Missing program_date_time Tag");
     let ad_slots_start_date_time = if is_vod {
         // Use the first program_date_time for VOD streams
-        first_program_date_time.expect("Missing program_date_time for VOD streams")
+        first_program_date_time
     } else {
         // Use the server start time for live streams
         *START_TIME
     };
 
-    // Generate ad slot every half a minute for static mode by default
-    let fixed_ad_slots: Vec<AdSlot> = (1..DEFAULT_AD_NUMBER)
-        .map(|i| {
-            let seconds = i * 30;
-            let start_time = ad_slots_start_date_time + chrono::Duration::seconds(seconds);
-
-            AdSlot {
-                id: Uuid::new_v4(),
-                index: i as u64,
-                start_time: start_time,
-                duration: DEFAULT_AD_DURATION,
-                pod_num: 2,
-            }
-        })
-        .collect();
-
+    // Find the available ad slots
     let ad_slots: Vec<AdSlot> = if is_vod || !is_dynamic {
+        // Generate ad slot every half a minute for static mode by default
+        let fixed_ad_slots: Vec<AdSlot> = generate_static_ad_slots(ad_slots_start_date_time);
+
         // Save fixed ad slots to available slots
         if available_slots.0.is_empty() {
             for slot in &fixed_ad_slots {
@@ -592,39 +582,8 @@ fn insert_interstitials(
 
     // Find the date time tag for each segment
     // Or calculate the expected date time based on the previous segments
-    let mut current_program_date_time = first_program_date_time.unwrap();
-    let mut accumulated_segment_duration_ms = 0u128;
-    let expected_program_date_time_list: Vec<_> = segments
-        .iter()
-        .map(|(_, segment)| {
-            let optional_program_date_time = segment
-                .program_date_time
-                .as_ref()
-                .and_then(|program_date_time| {
-                    let date_str = program_date_time.date_time.as_ref();
-                    parse_date_time(date_str)
-                        // Ignore invalid date times
-                        .map_err(|_| log::error!("Invalid date time: {}", date_str))
-                        .ok()
-                })
-                .map(fixed_offset_to_local);
-            let segment_duration = segment.duration.duration();
-
-            if let Some(program_date_time) = optional_program_date_time {
-                current_program_date_time = program_date_time;
-                accumulated_segment_duration_ms = segment_duration.as_millis();
-
-                (program_date_time, segment_duration)
-            } else {
-                let expected_date_time = current_program_date_time
-                    + chrono::Duration::milliseconds(accumulated_segment_duration_ms as i64);
-                accumulated_segment_duration_ms += segment_duration.as_millis();
-
-                (expected_date_time, segment_duration)
-            }
-        })
-        .collect();
-
+    let expected_program_date_time_list =
+        calculate_expected_program_date_time_list(segments, first_program_date_time);
     for (index, (program_date_time, duration)) in expected_program_date_time_list.iter().enumerate()
     {
         log::debug!(
