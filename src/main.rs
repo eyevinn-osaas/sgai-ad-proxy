@@ -520,9 +520,8 @@ fn insert_interstitials(
     let is_vod = m3u8
         .playlist_type
         .is_some_and(|t| t == hls_m3u8::types::PlaylistType::Vod);
-    let is_dynamic = *ad_insert_mode == InsertionMode::Dynamic;
-
-    if is_vod && is_dynamic {
+    let is_static = *ad_insert_mode == InsertionMode::Static;
+    if is_vod && !is_static {
         log::error!("Dynamic ad insertion is not supported for VOD streams.");
         return;
     }
@@ -552,16 +551,17 @@ fn insert_interstitials(
 
     // By this point, we should have a valid program_date_time
     let first_program_date_time = first_program_date_time.expect("Missing program_date_time Tag");
-    let ad_slots_start_date_time = if is_vod {
-        // Use the first program_date_time for VOD streams
-        first_program_date_time
-    } else {
-        // Use the server start time for live streams
-        *START_TIME
-    };
-
     // Find the available ad slots
-    let ad_slots: Vec<AdSlot> = if is_vod || !is_dynamic {
+    let ad_slots: Vec<AdSlot> = if is_static {
+        // Find a reference date time for the ad slots
+        let ad_slots_start_date_time = if is_vod {
+            // Use the first program_date_time for VoD streams
+            first_program_date_time
+        } else {
+            // Use the server start time for Live streams
+            *START_TIME
+        };
+
         // Generate ad slot every half a minute for static mode by default
         let fixed_ad_slots: Vec<AdSlot> = generate_static_ad_slots(ad_slots_start_date_time);
 
@@ -575,7 +575,7 @@ fn insert_interstitials(
 
         fixed_ad_slots
     } else {
-        // Get all available ad slots
+        // Retrieve the available ad slots for dynamic mode
         available_slots.0.iter().map(|slot| slot.clone()).collect()
     };
     log::trace!("Available slots: {:?}", ad_slots);
