@@ -42,7 +42,6 @@ const POD_NUM_TEMPLATE: &str = "[template.pod]";
 const HLS_PLAYLIST_CONTENT_TYPE: &str = "application/vnd.apple.mpegurl";
 const HLS_INTERSTITIAL_ID: &str = "_HLS_interstitial_id";
 const HLS_PRIMARY_ID: &str = "_HLS_primary_id";
-const HLS_START_OFFSET: &str = "_HLS_start_offset";
 const HLS_FOLLOW_ID: &str = "_HLS_follow_id";
 
 // Get the start time of the program as a static DateTime
@@ -407,7 +406,6 @@ fn build_ad_response(
     // Get all linears (regular MP4s) from the VAST
     let valid_creatives = get_all_valid_creatives_from_vast(&vast);
 
-    let mut accumulated_duration = 0;
     let assets = valid_creatives
         .iter()
         .map(|creative| {
@@ -440,9 +438,6 @@ fn build_ad_response(
             // Save the ad for follow-up requests (this applies to not-transcoded ads)
             available_ads.linears.insert(id, ad);
 
-            let start_offset = accumulated_duration;
-            accumulated_duration += duration;
-
             let mut url = if transcoded_ad.is_some() {
                 url::Url::parse(&ad_url).expect("Invalid transcoded ad URL")
             } else {
@@ -452,7 +447,6 @@ fn build_ad_response(
                 .clear()
                 .append_pair(HLS_INTERSTITIAL_ID, interstitial_id)
                 .append_pair(HLS_PRIMARY_ID, user_id)
-                .append_pair(HLS_START_OFFSET, &start_offset.to_string())
                 .append_pair(HLS_FOLLOW_ID, &id.to_string());
 
             object! {
@@ -586,7 +580,7 @@ fn insert_interstitials(
         calculate_expected_program_date_time_list(segments, first_program_date_time);
     for (index, (program_date_time, duration)) in expected_program_date_time_list.iter().enumerate()
     {
-        log::debug!(
+        log::trace!(
             "Segment {index} starts at {program_date_time} and lasts for {:?}",
             duration
         );
