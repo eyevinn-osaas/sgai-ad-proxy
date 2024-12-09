@@ -32,7 +32,7 @@ python -m http.server 8001
 * A running instance of the [ad-server](https://github.com/Eyevinn/test-adserver).
 For example, one test ad server is available at <https://eyevinn-sgai.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/vast>
 
-* AVPlayer or any other video player (e.g., [HLS.js v1.6.0](https://hlsjs-dev.video-dev.org/demo)) that supports Server Guided Ad Insertion (SGAI).
+* QuickTime Player or any other video player (e.g., AVPlayer, [HLS.js v1.6.0](https://hlsjs-dev.video-dev.org/demo)) that supports Server Guided Ad Insertion (SGAI).
 
 ```bash
 # Once the ad-proxy server is running (e.g., on port 3333), 
