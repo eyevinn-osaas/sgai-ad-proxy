@@ -29,7 +29,7 @@ python -m http.server 8001
 # Now you can access the HLS stream at http://127.0.0.1:8001/test/master.m3u8
 ```
 
-* A running instance of the [ad-server](https://github.com/Eyevinn/test-adserver) OR [ad-normalizer](https://github.com/Eyevinn/ad-normalizer).
+* A running instance of the [Ad Server](https://github.com/Eyevinn/test-adserver) OR [Ad Normalizer](https://github.com/Eyevinn/ad-normalizer).
 
 * QuickTime Player or any other video player (e.g., AVPlayer, [HLS.js v1.6.0](https://hlsjs-dev.video-dev.org/demo)) that supports Server Guided Ad Insertion (SGAI).
 
@@ -41,7 +41,7 @@ python -m http.server 8001
 ### Run
 
 ```bash
-# Start the ad-proxy server on port 3333 with the origin HLS stream at http://localhost:8001/loop/master.m3u8
+# Start the ad-proxy server on port 3333 with the origin HLS stream at http://localhost:8001/test/master.m3u8
 # 1. Use ad normalizer at https://eyevinnlab-demo.eyevinn-ad-normalizer.auto.prod.osaas.io/api/v1/vast with query parameters dur, uid, ps, min, and max
 # Here the [template.*] will be replaced with the actual values before sending the request to the ad server while the rest will be passed as is
 # 2. Use static mode to insert ads into the HLS Live stream at specified timepoints
@@ -84,7 +84,7 @@ Options:
           Default number of ad slots to generate [default: 100]
 ```
 
-### Insert Ads dynamically
+### Insert Ads Dynamically
 
 One can run the ad-proxy in *dynamic* mode and then insert ads into the video stream by sending a GET request with the following query parameters:
 
@@ -104,7 +104,7 @@ It is also possible to check the status of the proxy server by sending a GET req
 curl http://127.0.0.1:3333/status
 ```
 
-### Ad personalization
+### Ad Personalization
 
 Instead of relying on personalized playlist, ad personalization can be achieved by using query parameters in:
 
@@ -133,7 +133,7 @@ fileSequence14.ts
 #EXT-X-PROGRAM-DATE-TIME:2024-10-30T12:52:43.853+0100
 #EXTINF:4,
 fileSequence15.ts
-#EXT-X-DATERANGE:ID="ad_slot0",CLASS="com.apple.hls.interstitial",START-DATE="2024-10-30T12:52:47.207+01:00",DURATION=10,X-ASSET-LIST="http://localhost:3333/interstitials.m3u8?_HLS_interstitial_id=ad_slot0",X-RESTRICT="SKIP,JUMP",X-RESUME-OFFSET=10,X-SNAP="IN,OUT"
+#EXT-X-DATERANGE:ID="ad_slot0",CLASS="com.apple.hls.interstitial",START-DATE="2024-10-30T12:52:47.207+01:00",DURATION=30,X-ASSET-LIST="http://localhost:3333/interstitials.m3u8?_HLS_interstitial_id=ad_slot0",X-RESTRICT="SKIP,JUMP",X-SNAP="IN,OUT"
 #EXT-X-PROGRAM-DATE-TIME:2024-10-30T12:52:47.853+0100
 #EXTINF:4,
 fileSequence16.ts
