@@ -2,9 +2,15 @@ use actix_web::{HttpRequest, HttpResponseBuilder};
 use rustls::{ClientConfig, RootCertStore};
 use url::{ParseError, Url};
 
+#[derive(Clone, Debug)]
+pub struct Tracking {
+    pub event: String,
+    pub uri: String,
+}
+
 pub fn get_all_creatives_from_vast<'a>(
     vast: &'a vast4_rs::Vast<'a>,
-) -> Vec<&vast4_rs::Creative<'a>> {
+) -> Vec<&'a vast4_rs::Creative<'a>> {
     let ads = &vast.ads;
     ads.iter()
         .flat_map(|ad| {
@@ -79,10 +85,30 @@ pub fn get_media_urls_from_linear(linear: &vast4_rs::Linear) -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub fn get_duration_and_media_urls_from_linear(linear: &vast4_rs::Linear) -> (u64, Vec<String>) {
+pub fn get_tracking_events_from_linear<'a>(linear: &vast4_rs::Linear) -> Vec<Tracking> {
+    linear
+        .tracking_events
+        .as_ref()
+        .map(|tracking_events| {
+            tracking_events
+                .trackings
+                .iter()
+                .map(|tracking| Tracking {
+                    event: tracking.event.to_string(),
+                    uri: tracking.uri.to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub fn get_duration_and_media_urls_and_tracking_events_from_linear<'a>(
+    linear: &'a vast4_rs::Linear,
+) -> (u64, Vec<String>, Vec<Tracking>) {
     (
         get_duration_from_linear(linear),
         get_media_urls_from_linear(linear),
+        get_tracking_events_from_linear(linear),
     )
 }
 
