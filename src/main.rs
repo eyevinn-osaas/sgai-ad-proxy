@@ -170,7 +170,7 @@ struct CliArguments {
     ad_server_endpoint: String,
 
     /// Ad insertion mode to use:
-    /// 1) static  - add interstitial every 30 seconds (100 in total).
+    /// 1) static  - add interstitial every 30 seconds (1000 in total).
     /// 2) dynamic - add interstitial when requested (Live Content only).
     #[clap(short, long, value_enum, verbatim_doc_comment, default_value_t = InsertionMode::Static)]
     ad_insertion_mode: InsertionMode,
@@ -190,7 +190,7 @@ struct CliArguments {
     default_repeating_cycle: u64,
 
     /// Default number of ad slots to generate
-    #[clap(long, verbatim_doc_comment, default_value = "100")]
+    #[clap(long, verbatim_doc_comment, default_value = "1000")]
     default_ad_number: u64,
 }
 

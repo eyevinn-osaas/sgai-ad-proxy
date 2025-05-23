@@ -70,7 +70,7 @@ Arguments:
 Options:
   -a, --ad-insertion-mode <AD_INSERTION_MODE>
           Ad insertion mode to use:
-          1) static  - add interstitial every 30 seconds (100 in total).
+          1) static  - add interstitial every 30 seconds (1000 in total).
           2) dynamic - add interstitial when requested (Live Content only). [default: static] [possible values: static, dynamic]
   -i, --interstitials-address <INTERSTITALS_ADDRESS>
           Base URL for interstitials (protocol://ip:port)
@@ -81,7 +81,7 @@ Options:
       --default-repeating-cycle <DEFAULT_REPEATING_CYCLE>
           Repeat the ad break every 'n' seconds [default: 30]
       --default-ad-number <DEFAULT_AD_NUMBER>
-          Default number of ad slots to generate [default: 100]
+          Default number of ad slots to generate [default: 1000]
 ```
 
 ### Insert Ads Dynamically
