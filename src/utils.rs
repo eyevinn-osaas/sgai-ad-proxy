@@ -15,8 +15,9 @@ pub fn get_all_creatives_from_vast<'a>(
         .collect::<Vec<_>>()
 }
 
-pub fn get_valid_creatives<'a>(
+pub fn filter_creatives_by<'a>(
     creatives: Vec<&'a vast4_rs::Creative<'a>>,
+    filter: impl Fn(&str) -> bool,
 ) -> Vec<&'a vast4_rs::Creative<'a>> {
     creatives
         .into_iter()
@@ -24,17 +25,36 @@ pub fn get_valid_creatives<'a>(
         .filter(|creative| creative.ad_id.is_some() && creative.linear.is_some())
         .filter(|creative| {
             let media_urls = get_media_urls_from_linear(creative.linear.as_ref().unwrap());
-            // Only return linears with mp4 media files.
+            // Only return linears with valid media files.
             // This is a simple way to filter out bumpers (which end with '*_2023_P8_mp4').
-            !media_urls.is_empty() && media_urls.first().unwrap().ends_with(".mp4")
+            !media_urls.is_empty() && filter(media_urls.first().unwrap())
         })
         .collect::<Vec<_>>()
 }
 
-pub fn get_all_valid_creatives_from_vast<'a>(
+pub fn get_all_raw_creatives_from_vast<'a>(
     vast: &'a vast4_rs::Vast<'a>,
 ) -> Vec<&'a vast4_rs::Creative<'a>> {
-    get_valid_creatives(get_all_creatives_from_vast(vast))
+    filter_creatives_by(get_all_creatives_from_vast(vast), is_media_segment)
+}
+
+pub fn get_all_transcoded_creatives_from_vast<'a>(
+    vast: &'a vast4_rs::Vast<'a>,
+) -> Vec<&'a vast4_rs::Creative<'a>> {
+    filter_creatives_by(
+        get_all_creatives_from_vast(vast),
+        is_transcoded_media_segment,
+    )
+}
+
+pub fn get_id_from_creative(creative: &vast4_rs::Creative) -> String {
+    creative
+        // Use the UniversalAdId if available, otherwise use the ad_id
+        .universal_ad_id
+        .first()
+        .map(|id| id.id.clone())
+        .unwrap_or(creative.ad_id.as_deref().unwrap_or("unknown").into())
+        .into_owned()
 }
 
 pub fn get_duration_from_linear(linear: &vast4_rs::Linear) -> u64 {
@@ -66,8 +86,74 @@ pub fn get_duration_and_media_urls_from_linear(linear: &vast4_rs::Linear) -> (u6
     )
 }
 
+pub fn find_program_datetime_tag(
+    playlist: &hls_m3u8::MediaPlaylist,
+) -> Option<chrono::DateTime<chrono::Local>> {
+    playlist
+        .segments
+        .iter()
+        .find_map(|(_, segment)| segment.program_date_time.as_ref())
+        .and_then(|program_date_time| {
+            let date_str = program_date_time.date_time.as_ref();
+            parse_date_time(date_str)
+                // Ignore invalid date times
+                .map_err(|_| log::error!("Invalid date time: {}", date_str))
+                .ok()
+        })
+        .map(fixed_offset_to_local)
+        .inspect(|program_date_time| {
+            log::debug!(
+                "First available program_date_time in local timezone: {:?}",
+                program_date_time
+            );
+        })
+}
+
+pub fn calculate_expected_program_date_time_list(
+    segments: &hls_m3u8::stable_vec::StableVec<hls_m3u8::MediaSegment>,
+    first_program_date_time: chrono::DateTime<chrono::Local>,
+) -> Vec<(chrono::DateTime<chrono::Local>, std::time::Duration)> {
+    let mut current_program_date_time = first_program_date_time;
+    let mut accumulated_segment_duration_ms = 0u128;
+
+    segments
+        .iter()
+        .map(|(_, segment)| {
+            let optional_program_date_time = segment
+                .program_date_time
+                .as_ref()
+                .and_then(|program_date_time| {
+                    let date_str = program_date_time.date_time.as_ref();
+                    parse_date_time(date_str)
+                        .map_err(|_| log::error!("Invalid date time: {}", date_str))
+                        .ok()
+                })
+                .map(fixed_offset_to_local);
+
+            let segment_duration = segment.duration.duration();
+
+            if let Some(program_date_time) = optional_program_date_time {
+                current_program_date_time = program_date_time;
+                accumulated_segment_duration_ms = segment_duration.as_millis();
+
+                (program_date_time, segment_duration)
+            } else {
+                let expected_date_time = current_program_date_time
+                    + chrono::Duration::milliseconds(accumulated_segment_duration_ms as i64);
+                accumulated_segment_duration_ms += segment_duration.as_millis();
+
+                (expected_date_time, segment_duration)
+            }
+        })
+        .collect()
+}
+
 pub fn is_media_segment(path: &str) -> bool {
     path.contains(".ts") || path.contains(".cmf") || path.contains(".mp") || path.contains(".m4s")
+}
+
+pub fn is_transcoded_media_segment(path: &str) -> bool {
+    path.contains(".m3u8")
 }
 
 pub fn fixed_offset_to_local(
@@ -86,6 +172,16 @@ pub fn parse_date_time(
         .or_else(|_| chrono::DateTime::parse_from_str(date_time, default_date_time_format));
 
     date_time
+}
+
+pub fn date_time_to_string(date_time: &chrono::DateTime<chrono::Local>) -> String {
+    date_time.to_rfc3339_opts(chrono::SecondsFormat::Millis, false)
+}
+
+pub fn make_program_date_time_tag(
+    date_time: &chrono::DateTime<chrono::Local>,
+) -> hls_m3u8::tags::ExtXProgramDateTime<'static> {
+    hls_m3u8::tags::ExtXProgramDateTime::new(date_time_to_string(date_time))
 }
 
 /// Create simple rustls client config from root certificates.

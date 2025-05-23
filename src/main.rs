@@ -1,25 +1,20 @@
 mod utils;
 use utils::{
-    base_url, build_forward_url, copy_headers, fixed_offset_to_local,
-    get_all_valid_creatives_from_vast, get_duration_and_media_urls_from_linear, get_header_value,
-    get_query_param, is_media_segment, parse_date_time, rustls_config,
+    base_url, build_forward_url, calculate_expected_program_date_time_list, copy_headers,
+    find_program_datetime_tag, get_all_raw_creatives_from_vast,
+    get_all_transcoded_creatives_from_vast, get_duration_and_media_urls_from_linear,
+    get_header_value, get_id_from_creative, get_query_param, is_media_segment,
+    make_program_date_time_tag, rustls_config,
 };
 
 use actix_web::{error, middleware, web, App, Error, HttpRequest, HttpResponse, HttpServer};
 use awc::{http::header, Client, Connector};
 use clap::{Parser, ValueEnum};
-use couch_rs::database::Database;
-use couch_rs::document::{DocumentCollection, TypedCouchDocument};
-use couch_rs::types::document::DocumentId;
-use couch_rs::types::find::FindQuery;
-use couch_rs::CouchDocument;
 use dashmap::{DashMap, DashSet};
-use hls_m3u8::tags::ExtXDateRange;
+use hls_m3u8::tags::{ExtXDateRange, VariantStream};
 use hls_m3u8::types::Value;
-use hls_m3u8::MediaPlaylist;
-use hls_m3u8::MediaSegment;
+use hls_m3u8::{MasterPlaylist, MediaPlaylist, MediaSegment};
 use json::object;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::io;
@@ -27,9 +22,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use url::Url;
 use uuid::Uuid;
-
-const DEFAULT_AD_DURATION: u64 = 13;
-const DEFAULT_AD_NUMBER: i64 = 100;
 
 const STATUS_PREFIX: &str = "/status";
 const COMMAND_PREFIX: &str = "/command";
@@ -39,10 +31,12 @@ const SESSION_ID_TEMPLATE: &str = "[template.sessionId]";
 const DURATION_TEMPLATE: &str = "[template.duration]";
 const POD_NUM_TEMPLATE: &str = "[template.pod]";
 
+const HLS_PLAYLIST_CONTENT_TYPE: &str = "application/vnd.apple.mpegurl";
 const HLS_INTERSTITIAL_ID: &str = "_HLS_interstitial_id";
 const HLS_PRIMARY_ID: &str = "_HLS_primary_id";
-const HLS_START_OFFSET: &str = "_HLS_start_offset";
-const HLS_FOLLOW_ID: &str = "_HLS_follow_id";
+const AD_ID: &str = "_ad_id";
+
+const APPLICATION_XML: &str = "application/xml";
 
 // Get the start time of the program as a static DateTime
 lazy_static::lazy_static! {
@@ -55,19 +49,6 @@ enum RequestType {
     MediaPlayList,
     Segment,
     Other,
-}
-
-#[derive(Serialize, Deserialize, CouchDocument, Debug)]
-struct TranscodedAd {
-    // UniversalAdId from the VAST
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub _id: DocumentId,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub _rev: String,
-
-    name: Option<String>,
-    duration: u64,
-    url: String,
 }
 
 #[derive(Clone, Default)]
@@ -179,7 +160,7 @@ struct CliArguments {
     listen_port: u16,
 
     /// HLS stream address (protocol://ip:port/path)
-    /// e.g., http://localhost/test/master.m3u8)
+    /// (e.g., http://localhost/test/master.m3u8)
     #[clap(verbatim_doc_comment)]
     master_playlist_url: String,
 
@@ -200,15 +181,17 @@ struct CliArguments {
     #[clap(short, long, verbatim_doc_comment, default_value_t = String::from(""))]
     interstitials_address: String,
 
-    /// CouchDB endpoint (protocol://ip:port)
-    /// If provided, the server will connect to the CouchDB instance to fetch transcoded ads
-    /// 'COUCHDB_USER' and 'COUCHDB_PASSWORD' environment variables should be set for authentication
-    #[clap(long, verbatim_doc_comment, default_value_t = String::from(""))]
-    couchdb_endpoint: String,
+    /// Default ad break duration in seconds
+    #[clap(long, verbatim_doc_comment, default_value = "13")]
+    default_ad_duration: u64,
 
-    /// CouchDB table name
-    #[clap(long, verbatim_doc_comment, default_value_t = String::from("transcoded_test_ads"))]
-    couchdb_table: String,
+    /// Repeat the ad break every 'n' seconds
+    #[clap(long, verbatim_doc_comment, default_value = "30")]
+    default_repeating_cycle: u64,
+
+    /// Default number of ad slots to generate
+    #[clap(long, verbatim_doc_comment, default_value = "100")]
+    default_ad_number: u64,
 }
 
 #[derive(ValueEnum, Clone, Debug, PartialEq)]
@@ -232,6 +215,9 @@ struct ServerConfig {
     interstitials_address: Url,
     master_playlist_path: String,
     insertion_mode: InsertionMode,
+    default_ad_duration: u64,
+    default_repeating_cycle: u64,
+    default_ad_number: u64
 }
 
 impl ServerConfig {
@@ -240,12 +226,18 @@ impl ServerConfig {
         interstitials_address: Url,
         master_playlist_path: String,
         insertion_mode: InsertionMode,
+        default_ad_duration: u64,
+        default_repeating_cycle: u64,
+        default_ad_number: u64
     ) -> Self {
         Self {
             forward_url,
             interstitials_address,
             master_playlist_path,
             insertion_mode,
+            default_ad_duration,
+            default_repeating_cycle,
+            default_ad_number
         }
     }
 
@@ -255,6 +247,9 @@ impl ServerConfig {
             "interstitials_address": self.interstitials_address.as_str(),
             "master_playlist_path": self.master_playlist_path.clone(),
             "insertion_mode": self.insertion_mode.to_str(),
+            "default_ad_duration": self.default_ad_duration,
+            "default_repeating_cycle": self.default_repeating_cycle,
+            "default_ad_number": self.default_ad_number
         }
     }
 }
@@ -369,19 +364,6 @@ async fn build_ad_server_url(
     Ok(updated_ad_server_url)
 }
 
-fn make_new_ad_from_transcoded_ad(transcoded_ad: &TranscodedAd) -> Ad {
-    let ad_id = Uuid::parse_str(&transcoded_ad._id).unwrap_or_default();
-    let duration = transcoded_ad.duration;
-    let url = transcoded_ad.url.clone();
-
-    Ad {
-        ad_id,
-        duration,
-        url,
-        requested_at: chrono::Local::now(),
-    }
-}
-
 fn make_new_ad_from_linear(linear: &vast4_rs::Linear) -> Ad {
     let (duration, urls) = get_duration_and_media_urls_from_linear(linear);
     let url = urls.first().unwrap().clone();
@@ -395,64 +377,33 @@ fn make_new_ad_from_linear(linear: &vast4_rs::Linear) -> Ad {
     }
 }
 
-fn build_ad_response(
+fn wrap_into_assets(
     vast: vast4_rs::Vast,
     req_url: Url,
     interstitial_id: &str,
     user_id: &str,
-    transcoded_ads: &Vec<TranscodedAd>,
     available_ads: web::Data<AvailableAds>,
 ) -> String {
     // Get all linears (regular MP4s) from the VAST
-    let valid_creatives = get_all_valid_creatives_from_vast(&vast);
-
-    let mut accumulated_duration = 0;
-    let assets = valid_creatives
+    let raw_assets = get_all_raw_creatives_from_vast(&vast)
         .iter()
         .map(|creative| {
-            let ad_id = creative
-                // Use the UniversalAdId if available, otherwise use the ad_id
-                .universal_ad_id
-                .first()
-                .map(|id| id.id.clone())
-                .unwrap_or(creative.ad_id.as_deref().unwrap_or("unknown").into());
+            let ad_id = get_id_from_creative(creative);
+            log::info!("Processing raw asset {ad_id}");
 
-            log::info!("Processing ad {ad_id}");
-            // Check if this ad has been transcoded
-            let transcoded_ad = transcoded_ads.iter().find(|ad| ad._id == ad_id);
-
-            // If the ad has been transcoded, use the transcoded version
-            let ad = transcoded_ad
-                .inspect(|ad| {
-                    log::info!("Using transcoded ad {:?}", ad);
-                })
-                .map(|ad| make_new_ad_from_transcoded_ad(ad))
-                // Otherwise, use the original MP4
-                .unwrap_or_else(|| make_new_ad_from_linear(creative.linear.as_ref().unwrap()));
-
+            let ad = make_new_ad_from_linear(creative.linear.as_ref().unwrap());
             let duration = ad.duration;
             let id = ad.ad_id;
-            // For transcoded ads, this points to a m3u8 playlist containing the fMP4s
-            // Otherwise, this points to a MP4 file
-            let ad_url = ad.url.clone();
 
-            // Save the ad for follow-up requests (this applies to not-transcoded ads)
+            // Save the asset for follow-up requests (this applies to not-transcoded ads)
             available_ads.linears.insert(id, ad);
 
-            let start_offset = accumulated_duration;
-            accumulated_duration += duration;
-
-            let mut url = if transcoded_ad.is_some() {
-                url::Url::parse(&ad_url).expect("Invalid transcoded ad URL")
-            } else {
-                req_url.clone()
-            };
+            let mut url = req_url.clone();
             url.query_pairs_mut()
                 .clear()
                 .append_pair(HLS_INTERSTITIAL_ID, interstitial_id)
                 .append_pair(HLS_PRIMARY_ID, user_id)
-                .append_pair(HLS_START_OFFSET, &start_offset.to_string())
-                .append_pair(HLS_FOLLOW_ID, &id.to_string());
+                .append_pair(AD_ID, &id.to_string());
 
             object! {
                 URI: url.as_str(),
@@ -461,10 +412,67 @@ fn build_ad_response(
         })
         .collect::<Vec<_>>();
 
+    let transcoded_assets = get_all_transcoded_creatives_from_vast(&vast)
+        .iter()
+        .map(|creative| {
+            let ad_id = get_id_from_creative(creative);
+            log::info!("Processing transcoded asset {ad_id}");
+
+            let ad = make_new_ad_from_linear(creative.linear.as_ref().unwrap());
+            object! {
+                URI: ad.url.as_str(),
+                DURATION: ad.duration,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let assets = raw_assets
+        .into_iter()
+        .chain(transcoded_assets.into_iter())
+        .collect::<Vec<_>>();
+
     object! {
         ASSETS: assets,
     }
     .pretty(2)
+}
+
+fn replace_absolute_url_with_relative_url(m3u8: &mut MasterPlaylist) {
+    m3u8.variant_streams.iter_mut().for_each(|variant| {
+        // Skip iframe playlists
+
+        if let VariantStream::ExtXStreamInf { uri, .. } = variant {
+            if !uri.starts_with("http") {
+                // Relative URIs
+                return;
+            }
+
+            // Replace the absolute URI by their relative path
+            let absolute_media_playlist_url = Url::parse(&uri).expect("Invalid media playlist URI");
+            let mut relative_url = absolute_media_playlist_url.path().to_string();
+            if let Some(query) = absolute_media_playlist_url.query() {
+                relative_url.push_str(query);
+            }
+
+            *uri = relative_url.into();
+        }
+    });
+}
+
+fn generate_static_ad_slots(ad_duration:u64, every:u64, number: u64, date_time: chrono::DateTime<chrono::Local>) -> Vec<AdSlot> {
+    (1..number)
+        .map(|i| {
+            let seconds = i * every;
+            let start_time = date_time + chrono::Duration::seconds(seconds as i64);
+            AdSlot {
+                id: Uuid::new_v4(),
+                index: i as u64,
+                start_time: start_time,
+                duration: ad_duration,
+                pod_num: 2,
+            }
+        })
+        .collect()
 }
 
 fn insert_interstitials(
@@ -474,32 +482,15 @@ fn insert_interstitials(
 ) {
     let interstitials_address = &config.interstitials_address;
     let ad_insert_mode = &config.insertion_mode;
-    let segments = &mut m3u8.segments;
 
-    let mut first_program_date_time = segments
-        .iter()
-        .find_map(|(_, segment)| segment.program_date_time.as_ref())
-        .and_then(|program_date_time| {
-            let date_str = program_date_time.date_time.as_ref();
-            parse_date_time(date_str)
-                // Ignore invalid date times
-                .map_err(|_| log::error!("Invalid date time: {}", date_str))
-                .ok()
-        })
-        .map(fixed_offset_to_local)
-        .inspect(|program_date_time| {
-            log::debug!(
-                "First available program_date_time in local timezone: {:?}",
-                program_date_time
-            );
-        });
+    let mut first_program_date_time = find_program_datetime_tag(&m3u8);
+    let segments = &mut m3u8.segments;
 
     let is_vod = m3u8
         .playlist_type
         .is_some_and(|t| t == hls_m3u8::types::PlaylistType::Vod);
-    let is_dynamic = *ad_insert_mode == InsertionMode::Dynamic;
-
-    if is_vod && is_dynamic {
+    let is_static = *ad_insert_mode == InsertionMode::Static;
+    if is_vod && !is_static {
         log::error!("Dynamic ad insertion is not supported for VOD streams.");
         return;
     }
@@ -514,9 +505,7 @@ fn insert_interstitials(
         // Use server start time as the program_date_time for the first segment
         segments.find_first_mut().and_then(|first_segment| {
             // Add to the playlist
-            first_segment.program_date_time = Some(hls_m3u8::tags::ExtXProgramDateTime::new(
-                (*START_TIME).to_rfc3339(),
-            ));
+            first_segment.program_date_time = Some(make_program_date_time_tag(&START_TIME));
 
             // Update the optional
             first_program_date_time = Some(*START_TIME);
@@ -530,31 +519,24 @@ fn insert_interstitials(
     }
 
     // By this point, we should have a valid program_date_time
-    let ad_slots_start_date_time = if is_vod {
-        // Use the first program_date_time for VOD streams
-        first_program_date_time.expect("Missing program_date_time for VOD streams")
-    } else {
-        // Use the server start time for live streams
-        *START_TIME
-    };
+    let first_program_date_time = first_program_date_time.expect("Missing program_date_time Tag");
+    // Find the available ad slots
+    let ad_slots: Vec<AdSlot> = if is_static {
+        // Find a reference date time for the ad slots
+        let ad_slots_start_date_time = if is_vod {
+            // Use the first program_date_time for VoD streams
+            first_program_date_time
+        } else {
+            // Use the server start time for Live streams
+            *START_TIME
+        };
 
-    // Generate ad slot every half a minute for static mode by default
-    let fixed_ad_slots: Vec<AdSlot> = (1..DEFAULT_AD_NUMBER)
-        .map(|i| {
-            let seconds = i * 30;
-            let start_time = ad_slots_start_date_time + chrono::Duration::seconds(seconds);
+        // Generate ad slots
+        let ad_duration = config.default_ad_duration;
+        let ad_every = config.default_repeating_cycle;
+        let ad_num = config.default_ad_number;
+        let fixed_ad_slots: Vec<AdSlot> = generate_static_ad_slots(ad_duration, ad_every, ad_num, ad_slots_start_date_time);
 
-            AdSlot {
-                id: Uuid::new_v4(),
-                index: i as u64,
-                start_time: start_time,
-                duration: DEFAULT_AD_DURATION,
-                pod_num: 2,
-            }
-        })
-        .collect();
-
-    let ad_slots: Vec<AdSlot> = if is_vod || !is_dynamic {
         // Save fixed ad slots to available slots
         if available_slots.0.is_empty() {
             for slot in &fixed_ad_slots {
@@ -565,52 +547,28 @@ fn insert_interstitials(
 
         fixed_ad_slots
     } else {
-        // Get all available ad slots
+        // Retrieve the available ad slots for dynamic mode
         available_slots.0.iter().map(|slot| slot.clone()).collect()
     };
     log::trace!("Available slots: {:?}", ad_slots);
 
     // Find the date time tag for each segment
     // Or calculate the expected date time based on the previous segments
-    let mut current_program_date_time = first_program_date_time.unwrap();
-    let mut accumulated_segment_duration_ms = 0u128;
-    let expected_program_date_time_list: Vec<_> = segments
-        .iter()
-        .map(|(_, segment)| {
-            let optional_program_date_time = segment
-                .program_date_time
-                .as_ref()
-                .and_then(|program_date_time| {
-                    let date_str = program_date_time.date_time.as_ref();
-                    parse_date_time(date_str)
-                        // Ignore invalid date times
-                        .map_err(|_| log::error!("Invalid date time: {}", date_str))
-                        .ok()
-                })
-                .map(fixed_offset_to_local);
-            let segment_duration = segment.duration.duration();
-
-            if let Some(program_date_time) = optional_program_date_time {
-                current_program_date_time = program_date_time;
-                accumulated_segment_duration_ms = segment_duration.as_millis();
-
-                (program_date_time, segment_duration)
-            } else {
-                let expected_date_time = current_program_date_time
-                    + chrono::Duration::milliseconds(accumulated_segment_duration_ms as i64);
-                accumulated_segment_duration_ms += segment_duration.as_millis();
-
-                (expected_date_time, segment_duration)
-            }
-        })
-        .collect();
-
+    let expected_program_date_time_list =
+        calculate_expected_program_date_time_list(segments, first_program_date_time);
     for (index, (program_date_time, duration)) in expected_program_date_time_list.iter().enumerate()
     {
-        log::debug!(
+        log::trace!(
             "Segment {index} starts at {program_date_time} and lasts for {:?}",
             duration
         );
+
+        // If a segment has a discontinuity tag but no program_date_time, insert one
+        let seg = segments.get_mut(index).unwrap();
+        if seg.has_discontinuity && seg.program_date_time.is_none() {
+            let program_date_time_tag = make_program_date_time_tag(program_date_time);
+            seg.program_date_time = Some(program_date_time_tag);
+        }
     }
 
     // Match the ad slots with the segments
@@ -633,12 +591,9 @@ fn insert_interstitials(
                         "{interstitials_address}{INTERSTITIAL_PLAYLIST}?{HLS_INTERSTITIAL_ID}={ad_slot_name}"
                     );
                     let slot_duration = ad_slot.duration as f32;
-                    let resume_offset_key = if is_vod {
-                        "X-RESUME-OFFSET"
-                    } else {
-                        "CUSTOM-DROP-OFFSET" // This will be ignored by the player
-                    };
-                    let date_range = ExtXDateRange::builder()
+                    
+                    let mut date_range = ExtXDateRange::builder();
+                    date_range
                         .id(ad_slot_name)
                         .class("com.apple.hls.interstitial")
                         .start_date(
@@ -647,13 +602,15 @@ fn insert_interstitials(
                         .duration(Duration::from_secs_f32(slot_duration))
                         .insert_client_attribute("X-ASSET-LIST", Value::String(url.into()))
                         .insert_client_attribute("X-SNAP", Value::String("IN,OUT".into()))
-                        .insert_client_attribute("X-RESTRICT", Value::String("SKIP,JUMP".into()))
-                        .insert_client_attribute(
-                            // Set the resume offset to 0 for VOD streams
-                            // Or drop offset for Live streams (then it resumes from the live edge)
-                            resume_offset_key,
+                        .insert_client_attribute("X-RESTRICT", Value::String("SKIP,JUMP".into()));
+                    if is_vod {
+                        // Set the resume offset to 0 for VOD streams
+                        date_range.insert_client_attribute(
+                            "X-RESUME-OFFSET",
                             Value::Float(hls_m3u8::types::Float::new(0.0)),
-                        )
+                        );
+                    }
+                    let date_range = date_range
                         .build()
                         .unwrap();
 
@@ -731,7 +688,6 @@ async fn handle_interstitials(
     available_slots: web::Data<AvailableAdSlots>,
     client: web::Data<Client>,
     user_defined_query_params: web::Data<UserDefinedQueryParams>,
-    couch_db: web::Data<Option<Database>>,
 ) -> Result<HttpResponse, Error> {
     let ad_server_url = ad_server_url.clone();
     let req_url = req.full_url();
@@ -741,8 +697,9 @@ async fn handle_interstitials(
     let user_id =
         get_query_param(&req, HLS_PRIMARY_ID).unwrap_or_else(|| "default_user".to_string());
 
-    if let Some(linear_id) = get_query_param(&req, HLS_FOLLOW_ID) {
-        return handle_follow_up_request(&interstitial_id, &linear_id, &user_id, available_ads)
+    // For non-transcoded ads
+    if let Some(linear_id) = get_query_param(&req, AD_ID) {
+        return handle_raw_asset_request(&interstitial_id, &linear_id, &user_id, available_ads)
             .await;
     }
     log::info!("Received interstitial request from user {user_id} for slot {interstitial_id}");
@@ -756,16 +713,17 @@ async fn handle_interstitials(
     )
     .await?;
     log::info!("Request ad pod with url {ad_url}");
-
     let mut res = client
         .get(ad_url.as_str())
+        // Specify the Accept header to request XML
+        .insert_header((header::ACCEPT, APPLICATION_XML))
         .send()
         .await
         .map_err(error::ErrorInternalServerError)?;
 
     let payload = res.body().await.map_err(error::ErrorInternalServerError)?;
     let xml = std::str::from_utf8(&payload).unwrap();
-    log::debug!("xml \n{:?}", xml);
+    log::debug!("VAST response from ad server \n{:?}", xml);
     let vast: vast4_rs::Vast = vast4_rs::from_str(&xml)
         .inspect_err(|err| {
             log::error!("Error parsing VAST: {:?}", err);
@@ -773,21 +731,7 @@ async fn handle_interstitials(
         // Return an empty VAST in case of parsing error
         .unwrap_or_default();
 
-    // Fetch transcoded ads from the database if available
-    let transcoded_ads = if let Some(db) = couch_db.as_ref() {
-        get_ad_from_db(db).await
-    } else {
-        Vec::new()
-    };
-
-    let response = build_ad_response(
-        vast,
-        req_url,
-        &interstitial_id,
-        &user_id,
-        &transcoded_ads,
-        available_ads,
-    );
+    let response = wrap_into_assets(vast, req_url, &interstitial_id, &user_id, available_ads);
     log::info!("asset json reply \n{response}");
 
     Ok(HttpResponse::Ok()
@@ -795,7 +739,7 @@ async fn handle_interstitials(
         .body(response))
 }
 
-async fn handle_follow_up_request(
+async fn handle_raw_asset_request(
     ad_slot_id: &str,
     linear_id: &str,
     user_id: &str,
@@ -825,12 +769,12 @@ async fn handle_follow_up_request(
         .has_end_list(true)
         .build()
         .inspect(|m3u8| {
-            log::debug!("m3u8 \n{m3u8}");
+            log::debug!("creative playlist \n{m3u8}");
         })
         .unwrap();
 
     Ok(HttpResponse::Ok()
-        .content_type("application/vnd.apple.mpegurl")
+        .content_type(HLS_PLAYLIST_CONTENT_TYPE)
         .body(m3u8.to_string()))
 }
 
@@ -870,8 +814,6 @@ async fn handle_master_playlist(
         .await
         .map_err(error::ErrorInternalServerError)?;
 
-    let payload = res.body().await.map_err(error::ErrorInternalServerError)?;
-
     // Save the user-defined query parameters for later use
     if let Some(query_params) = req.uri().query() {
         if let Some(playback_session_id) = get_header_value(&req, "x-playback-session-id") {
@@ -883,9 +825,29 @@ async fn handle_master_playlist(
         }
     }
 
+    let payload = res.body().await.map_err(error::ErrorInternalServerError)?;
+    let m3u8 = std::str::from_utf8(&payload).map_err(error::ErrorInternalServerError)?;
+    let playlist = MasterPlaylist::try_from(m3u8).inspect_err(|err| {
+        log::error!(
+            "Error {:?} when parsing master playlist. Returning the original playlist.",
+            err.to_string()
+        );
+    });
+
+    if playlist.is_err() {
+        // Just pass the original payload in case of parsing error
+        return Ok(HttpResponse::Ok()
+            .content_type(HLS_PLAYLIST_CONTENT_TYPE)
+            .body(payload));
+    }
+
+    let mut playlist = playlist.unwrap();
+    replace_absolute_url_with_relative_url(&mut playlist);
+    log::debug!("master playlist \n{playlist}");
+
     Ok(HttpResponse::Ok()
-        .content_type("application/vnd.apple.mpegurl")
-        .body(payload))
+        .content_type(HLS_PLAYLIST_CONTENT_TYPE)
+        .body(playlist.to_string()))
 }
 
 async fn handle_media_playlist(
@@ -903,15 +865,28 @@ async fn handle_media_playlist(
         .map_err(error::ErrorInternalServerError)?;
 
     let payload = res.body().await.map_err(error::ErrorInternalServerError)?;
-    let manifest = std::str::from_utf8(&payload).unwrap();
-    let mut m3u8 = MediaPlaylist::try_from(manifest).unwrap();
+    let m3u8 = std::str::from_utf8(&payload).map_err(error::ErrorInternalServerError)?;
+    let playlist = MediaPlaylist::try_from(m3u8).inspect_err(|err| {
+        log::error!(
+            "Error {:?} when parsing media playlist. Returning the original playlist.",
+            err.to_string()
+        );
+    });
 
-    insert_interstitials(&mut m3u8, &config, available_slots);
-    log::debug!("m3u8 \n{m3u8}");
+    if playlist.is_err() {
+        // Just pass the original payload in case of parsing error
+        return Ok(HttpResponse::Ok()
+            .content_type(HLS_PLAYLIST_CONTENT_TYPE)
+            .body(payload.clone()));
+    }
+
+    let mut playlist = playlist.unwrap();
+    insert_interstitials(&mut playlist, &config, available_slots);
+    log::debug!("media playlist \n{playlist}");
 
     Ok(HttpResponse::Ok()
-        .content_type("application/vnd.apple.mpegurl")
-        .body(m3u8.to_string()))
+        .content_type(HLS_PLAYLIST_CONTENT_TYPE)
+        .body(playlist.to_string()))
 }
 
 async fn handle_segment(
@@ -954,41 +929,6 @@ async fn handle_status(
         .body(response))
 }
 
-async fn try_connect_to_couchdb(database_url: &str, table: &str) -> Option<Database> {
-    if database_url.is_empty() || table.is_empty() {
-        return None;
-    }
-    log::info!("Connecting to CouchDB at {database_url} with table {table}");
-
-    let (user, password) = (
-        std::env::var("COUCHDB_USER"),
-        std::env::var("COUCHDB_PASSWORD"),
-    );
-
-    match (user, password) {
-        (Ok(user), Ok(password)) => {
-            let couch_rs_client = couch_rs::Client::new(database_url, &user, &password)
-                .expect("Failed to login to CouchDB. Please check your credentials.");
-            let db = couch_rs_client
-                .db(table)
-                .await
-                .ok()
-                .expect("Failed to join table");
-            Some(db)
-        }
-        _ => {
-            log::warn!("Missing 'COUCHDB_USER' or 'COUCHDB_PASSWORD' environment variables");
-            None
-        }
-    }
-}
-
-async fn get_ad_from_db(db: &Database) -> Vec<TranscodedAd> {
-    let find_all = FindQuery::find_all();
-    let docs: DocumentCollection<TranscodedAd> = db.find(&find_all).await.unwrap_or_default();
-    docs.rows
-}
-
 #[actix_web::main]
 async fn main() -> io::Result<()> {
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
@@ -1022,6 +962,10 @@ async fn main() -> io::Result<()> {
         args.ad_insertion_mode.to_str()
     );
 
+    if args.default_repeating_cycle < args.default_ad_duration {
+        log::warn!("Ad duration is greater than the repeating cycle. This may cause issues for live streams.");
+    }
+
     let client_tls_config = Arc::new(rustls_config());
     let available_slots = AvailableAdSlots::default();
     let available_ads = AvailableAds::default();
@@ -1030,9 +974,11 @@ async fn main() -> io::Result<()> {
         interstitials_address,
         playlist_path.to_string(),
         args.ad_insertion_mode,
+        args.default_ad_duration,
+        args.default_repeating_cycle,
+        args.default_ad_number
     );
     let user_defined_query_params = UserDefinedQueryParams::default();
-    let data_base = try_connect_to_couchdb(&args.couchdb_endpoint, &args.couchdb_table).await;
 
     HttpServer::new(move || {
         let cors = actix_cors::Cors::permissive();
@@ -1052,7 +998,6 @@ async fn main() -> io::Result<()> {
             .app_data(web::Data::new(server_config.clone()))
             .app_data(web::Data::new(ad_server_url.clone()))
             .app_data(web::Data::new(user_defined_query_params.clone()))
-            .app_data(web::Data::new(data_base.clone()))
             .wrap(middleware::Logger::default())
             .wrap(cors)
             .route(COMMAND_PREFIX, web::get().to(handle_commands))
