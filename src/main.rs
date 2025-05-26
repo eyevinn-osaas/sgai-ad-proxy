@@ -182,18 +182,6 @@ struct CliArguments {
     /// e.g., http://localhost:${LISTEN_PORT}
     #[clap(short, long, verbatim_doc_comment, default_value_t = String::from(""))]
     interstitials_address: String,
-
-    /// Default ad break duration in seconds
-    #[clap(long, verbatim_doc_comment, default_value = "13")]
-    default_ad_duration: u64,
-
-    /// Repeat the ad break every 'n' seconds
-    #[clap(long, verbatim_doc_comment, default_value = "30")]
-    default_repeating_cycle: u64,
-
-    /// Default number of ad slots to generate
-    #[clap(long, verbatim_doc_comment, default_value = "1000")]
-    default_ad_number: u64,
 }
 
 #[derive(ValueEnum, Clone, Debug, PartialEq)]
@@ -951,9 +939,37 @@ async fn handle_status(
         .body(response))
 }
 
+fn parse_env_var<T: std::str::FromStr>(var_name: &str, default: T) -> T {
+    std::env::var(var_name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+fn parse_default_values() -> (u64, u64, u64) {
+    // Default ad break duration in seconds
+    let default_ad_duration = parse_env_var("DEFAULT_AD_DURATION", 13);
+    // Repeat the ad break every 'n' seconds
+    let default_repeating_cycle = parse_env_var("DEFAULT_REPEATING_CYCLE", 30);
+    // Default number of ad slots to generate
+    let default_ad_number = parse_env_var("DEFAULT_AD_NUMBER", 1000);
+
+    (default_ad_duration, default_repeating_cycle, default_ad_number)
+}
+
 #[actix_web::main]
 async fn main() -> io::Result<()> {
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
+    
+    let (default_ad_duration, default_repeating_cycle, default_ad_number) =
+            parse_default_values();
+    log::info!(
+        "Default ad duration: {default_ad_duration}s, repeating cycle: {default_repeating_cycle}s, ad number: {default_ad_number}"
+    );
+
+    if default_repeating_cycle < default_ad_duration {
+        log::warn!("Ad duration is greater than the repeating cycle. This may cause issues for live streams.");
+    }
 
     let args = CliArguments::parse();
 
@@ -984,10 +1000,6 @@ async fn main() -> io::Result<()> {
         args.ad_insertion_mode.to_str()
     );
 
-    if args.default_repeating_cycle < args.default_ad_duration {
-        log::warn!("Ad duration is greater than the repeating cycle. This may cause issues for live streams.");
-    }
-
     let client_tls_config = Arc::new(rustls_config());
     let available_slots = AvailableAdSlots::default();
     let available_ads = AvailableAds::default();
@@ -996,9 +1008,9 @@ async fn main() -> io::Result<()> {
         interstitials_address,
         playlist_path.to_string(),
         args.ad_insertion_mode,
-        args.default_ad_duration,
-        args.default_repeating_cycle,
-        args.default_ad_number
+        default_ad_duration,
+        default_repeating_cycle,
+        default_ad_number
     );
     let user_defined_query_params = UserDefinedQueryParams::default();
 
