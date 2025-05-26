@@ -152,14 +152,32 @@ fileSequence18.ts
    "ASSETS": [
       {
          "URI": "https:/eyevinnlab-adnormalizer.minio-minio.auto.prod.osaas.io/adassets/AAA2FDDDD1232F1/777f6929-ce6f-4712-82d9-aba2da6fd5c2/index.m3u8",
-         "DURATION": 15
-      },
-      {
-         "URI": "https:/eyevinnlab-adnormalizer.minio-minio.auto.prod.osaas.io/adassets/AAA2FCCCC1232F2/e4ba2aff-a0e0-409b-a841-85b53d8ea84f/index.m3u8",
-         "DURATION": 15
+         "DURATION": 15,
+         "TRACKING_EVENTS": [
+            {
+              "event": "start",
+              "uri": "http://eyevinnlab-adnormalizer.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/04c216b8-43d2-47c9-bfb1-bf38bf19beec/tracking?adId=alvedon-10s_1&progress=0"
+            },
+            {
+              "event": "firstQuartile",
+              "uri": "http://eyevinnlab-adnormalizer.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/04c216b8-43d2-47c9-bfb1-bf38bf19beec/tracking?adId=alvedon-10s_1&progress=25"
+            },
+            {
+              "event": "midpoint",
+              "uri": "http://eyevinnlab-adnormalizer.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/04c216b8-43d2-47c9-bfb1-bf38bf19beec/tracking?adId=alvedon-10s_1&progress=50"
+            },
+            {
+              "event": "thirdQuartile",
+              "uri": "http://eyevinnlab-adnormalizer.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/04c216b8-43d2-47c9-bfb1-bf38bf19beec/tracking?adId=alvedon-10s_1&progress=75"
+            },
+            {
+              "event": "complete",
+              "uri": "http://eyevinnlab-adnormalizer.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/04c216b8-43d2-47c9-bfb1-bf38bf19beec/tracking?adId=alvedon-10s_1&progress=100"
+            }
+          ]
       }
    ]
-   }
+}
 ```
 
 ## Limitations

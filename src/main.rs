@@ -1,8 +1,9 @@
 mod utils;
 use utils::{
+    Tracking,
     base_url, build_forward_url, calculate_expected_program_date_time_list, copy_headers,
     find_program_datetime_tag, get_all_raw_creatives_from_vast,
-    get_all_transcoded_creatives_from_vast, get_duration_and_media_urls_from_linear,
+    get_all_transcoded_creatives_from_vast, get_duration_and_media_urls_and_tracking_events_from_linear,
     get_header_value, get_id_from_creative, get_query_param, is_media_segment,
     make_program_date_time_tag, rustls_config,
 };
@@ -57,6 +58,7 @@ struct Ad {
     duration: u64,
     url: String,
     requested_at: chrono::DateTime<chrono::Local>,
+    tracking: Vec<Tracking>,
 }
 
 #[derive(Clone, Default)]
@@ -182,15 +184,15 @@ struct CliArguments {
     interstitials_address: String,
 
     /// Default ad break duration in seconds
-    #[clap(long, verbatim_doc_comment, default_value = "13")]
+    #[clap(long, env, verbatim_doc_comment, default_value = "13")]
     default_ad_duration: u64,
 
     /// Repeat the ad break every 'n' seconds
-    #[clap(long, verbatim_doc_comment, default_value = "30")]
+    #[clap(long, env, verbatim_doc_comment, default_value = "30")]
     default_repeating_cycle: u64,
 
     /// Default number of ad slots to generate
-    #[clap(long, verbatim_doc_comment, default_value = "1000")]
+    #[clap(long, env, verbatim_doc_comment, default_value = "1000")]
     default_ad_number: u64,
 }
 
@@ -325,6 +327,10 @@ async fn build_ad_server_url(
     .cloned()
     .collect();
 
+    if query_templates.is_empty() {
+        log::warn!("No query templates found for ad server URL. Missing [duration] ...");
+    }
+
     // Extract and transform query parameters from the ad_server_url
     let transformed_queries: String = ad_server_url
         .query_pairs()
@@ -365,7 +371,7 @@ async fn build_ad_server_url(
 }
 
 fn make_new_ad_from_linear(linear: &vast4_rs::Linear) -> Ad {
-    let (duration, urls) = get_duration_and_media_urls_from_linear(linear);
+    let (duration, urls, trackings) = get_duration_and_media_urls_and_tracking_events_from_linear(linear);
     let url = urls.first().unwrap().clone();
     let ad_id = Uuid::new_v4();
 
@@ -374,6 +380,7 @@ fn make_new_ad_from_linear(linear: &vast4_rs::Linear) -> Ad {
         duration,
         url,
         requested_at: chrono::Local::now(),
+        tracking: trackings,
     }
 }
 
@@ -394,9 +401,10 @@ fn wrap_into_assets(
             let ad = make_new_ad_from_linear(creative.linear.as_ref().unwrap());
             let duration = ad.duration;
             let id = ad.ad_id;
+            log::debug!("Tracking event {:?}", ad.tracking);
 
             // Save the asset for follow-up requests (this applies to not-transcoded ads)
-            available_ads.linears.insert(id, ad);
+            available_ads.linears.insert(id, ad.clone());
 
             let mut url = req_url.clone();
             url.query_pairs_mut()
@@ -408,6 +416,12 @@ fn wrap_into_assets(
             object! {
                 URI: url.as_str(),
                 DURATION: duration,
+                TRACKING_EVENTS: ad.tracking.iter().map(|tracking| {
+                    object! {
+                        event: tracking.event.as_str(),
+                        uri: tracking.uri.as_str(),
+                    }
+                }).collect::<Vec<_>>(),
             }
         })
         .collect::<Vec<_>>();
@@ -419,9 +433,17 @@ fn wrap_into_assets(
             log::info!("Processing transcoded asset {ad_id}");
 
             let ad = make_new_ad_from_linear(creative.linear.as_ref().unwrap());
+            log::debug!("Tracking event {:?}", ad.tracking);
+
             object! {
                 URI: ad.url.as_str(),
                 DURATION: ad.duration,
+                TRACKING_EVENTS: ad.tracking.iter().map(|tracking| {
+                    object! {
+                        event: tracking.event.as_str(),
+                        uri: tracking.uri.as_str(),
+                    }
+                }).collect::<Vec<_>>(),
             }
         })
         .collect::<Vec<_>>();
@@ -960,6 +982,11 @@ async fn main() -> io::Result<()> {
     log::info!(
         "Ad server endpoint: {ad_server_url}, {:?} insertion",
         args.ad_insertion_mode.to_str()
+    );
+    log::info!("Default ad duration: {}s, repeating cycle: {}s, ad number: {}",
+        args.default_ad_duration,
+        args.default_repeating_cycle,
+        args.default_ad_number
     );
 
     if args.default_repeating_cycle < args.default_ad_duration {

@@ -1,7 +1,7 @@
 mod utils;
 use utils::{
     get_all_raw_creatives_from_vast, get_all_transcoded_creatives_from_vast,
-    get_duration_and_media_urls_from_linear,
+    get_duration_and_media_urls_and_tracking_events_from_linear,
 };
 
 fn main() {
@@ -15,8 +15,10 @@ fn main() {
         .map(|creative| creative.linear.as_ref().unwrap())
         .collect::<Vec<_>>();
     for linear in linears {
-        let (duration, media_urls) = get_duration_and_media_urls_from_linear(&linear);
+        let (duration, media_urls, tracking) =
+            get_duration_and_media_urls_and_tracking_events_from_linear(&linear);
         println!("Duration: {}", duration);
         println!("Media URLs: {:?}", media_urls);
+        println!("Tracking Events: {:?}", tracking);
     }
 }
