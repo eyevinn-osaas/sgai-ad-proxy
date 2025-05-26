@@ -2,7 +2,7 @@
 name = "ad_proxy"
 description = "Server Guided Ad Insertion Proxy"
 repository = "https://github.com/Eyevinn/sgai-ad-proxy"
-version = "1.1.1"
+version = "1.1.2"
 edition = "2024"
 authors = ["Kun Wu <kun.wu@eyevinn.se>; Jonas Birmé <jonas.birme@eyevinn.se>"]
 exclude = ["docs/*"]
