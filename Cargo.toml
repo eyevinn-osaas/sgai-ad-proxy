@@ -35,7 +35,7 @@ actix-web = { version = "4.11.0", features = ["openssl"] }
 actix-http = "3.11.0"
 actix-cors = "0.7.1"
 
-clap = { version = "4.5.38", features = ["derive"] }
+clap = { version = "4.5.38", features = ["derive", "env"] }
 chrono = { version = "0.4.41", features = ["serde"] }
 # derive_more = "1.0.0"
 dotenvy = "0.15"
