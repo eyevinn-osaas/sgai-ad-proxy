@@ -77,11 +77,11 @@ Options:
           If not provided, the server will use 'localhost' and the 'listen port' as the base URL
           e.g., http://localhost:${LISTEN_PORT} [default: ]
       --default-ad-duration <DEFAULT_AD_DURATION>
-          Default ad break duration in seconds [default: 13]
+          Default ad break duration in seconds [env: DEFAULT_AD_DURATION=] [default: 13]
       --default-repeating-cycle <DEFAULT_REPEATING_CYCLE>
-          Repeat the ad break every 'n' seconds [default: 30]
+          Repeat the ad break every 'n' seconds [env: DEFAULT_REPEATING_CYCLE=] [default: 30]
       --default-ad-number <DEFAULT_AD_NUMBER>
-          Default number of ad slots to generate [default: 1000]
+          Default number of ad slots to generate [env: DEFAULT_AD_NUMBER=] [default: 1000]
 ```
 
 ### Insert Ads Dynamically

@@ -184,16 +184,16 @@ struct CliArguments {
     interstitials_address: String,
 
     /// Default ad break duration in seconds
-    #[clap(long, env, verbatim_doc_comment, default_value = "13")]
-    default_ad_duration: u64,
+    #[clap(long, env, verbatim_doc_comment, default_value_t = String::from(""))]
+    default_ad_duration: String,
 
     /// Repeat the ad break every 'n' seconds
-    #[clap(long, env, verbatim_doc_comment, default_value = "30")]
-    default_repeating_cycle: u64,
+    #[clap(long, env, verbatim_doc_comment, default_value_t = String::from(""))]
+    default_repeating_cycle: String,
 
     /// Default number of ad slots to generate
-    #[clap(long, env, verbatim_doc_comment, default_value = "1000")]
-    default_ad_number: u64,
+    #[clap(long, env, verbatim_doc_comment, default_value_t = String::from(""))]
+    default_ad_number: String,
 }
 
 #[derive(ValueEnum, Clone, Debug, PartialEq)]
@@ -951,11 +951,25 @@ async fn handle_status(
         .body(response))
 }
 
+fn parse_into_u64(value: &str, default: u64) -> u64 {
+    value.parse().unwrap_or(default)
+}
+
+fn parse_default_values(args: &CliArguments) -> (u64, u64, u64) {
+    (
+        parse_into_u64(&args.default_ad_duration, 13),     // Default ad duration is 30 seconds
+        parse_into_u64(&args.default_repeating_cycle, 30), // Default repeating cycle is 30 seconds
+        parse_into_u64(&args.default_ad_number, 1000),     // Default ad number is 1000
+    )
+}
+
 #[actix_web::main]
 async fn main() -> io::Result<()> {
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
 
     let args = CliArguments::parse();
+    let (default_ad_duration, default_repeating_cycle, default_ad_number) =
+        parse_default_values(&args);
 
     let master_playlist_url =
         Url::parse(&args.master_playlist_url).expect("Invalid master playlist URL");
@@ -984,12 +998,11 @@ async fn main() -> io::Result<()> {
         args.ad_insertion_mode.to_str()
     );
     log::info!("Default ad duration: {}s, repeating cycle: {}s, ad number: {}",
-        args.default_ad_duration,
-        args.default_repeating_cycle,
-        args.default_ad_number
+        default_ad_duration,
+        default_repeating_cycle,
+        default_ad_number
     );
-
-    if args.default_repeating_cycle < args.default_ad_duration {
+    if args.ad_insertion_mode==InsertionMode::Static && default_repeating_cycle < default_ad_duration {
         log::warn!("Ad duration is greater than the repeating cycle. This may cause issues for live streams.");
     }
 
@@ -1001,9 +1014,9 @@ async fn main() -> io::Result<()> {
         interstitials_address,
         playlist_path.to_string(),
         args.ad_insertion_mode,
-        args.default_ad_duration,
-        args.default_repeating_cycle,
-        args.default_ad_number
+        default_ad_duration,
+        default_repeating_cycle,
+        default_ad_number
     );
     let user_defined_query_params = UserDefinedQueryParams::default();
 
