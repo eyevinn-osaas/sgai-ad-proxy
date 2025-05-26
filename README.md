@@ -4,6 +4,65 @@
 
 This application is a simple **http** proxy server that inserts ads into a video stream. It is designed to be used in conjunction with a video player (e.g., AVPlayer) that supports Server Guided Ad Insertion (SGAI). The proxy server intercepts the video stream from the origin server and inserts ads into the media playlist as interstitials at specified timepoints.
 
+## Evaluate in Open Source Cloud
+
+This project is also available as a web service in [Eyevinn Open Source Cloud](https://www.osaas.io) and the quickest way to get started.
+
+Obtain your personal access token from the Open Source Cloud web console (settings/API) and store it in the environment variable `OSC_ACCESS_TOKEN`
+
+```bash
+% export OSC_ACCESS_TOKEN=<personal-access-token>
+```
+
+Create a test HLS live source.
+
+```bash
+% npx -y @osaas/cli create eyevinn-docker-testsrc-hls-live demo
+Instance created:
+{
+  name: 'demo',
+  url: 'https://eyevinnlab-demo.eyevinn-docker-testsrc-hls-live.auto.prod.osaas.io',
+  ...
+}
+```
+
+Create a test ad server instance.
+
+```bash
+% npx -y @osaas/cli create eyevinn-test-adserver demo
+Instance created:
+{
+  name: 'demo',
+  url: 'https://eyevinnlab-demo.eyevinn-test-adserver.auto.prod.osaas.io',
+  ...
+}
+```
+
+Create the SGAI ad proxy.
+
+```bash
+% npx -y @osaas/cli create eyevinn-sgai-ad-proxy demo \
+  -o VastEndpoint="https://eyevinnlab-demo.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/vast?dur=[template.duration]&uid=[template.sessionId]&ps=[template.pod]" \
+  -o OriginUrl="https://eyevinnlab-demo.eyevinn-docker-testsrc-hls-live.auto.prod.osaas.io/loop/master.m3u8" \
+  -o InsertionMode=dynamic
+Instance created:
+{
+  name: 'demo',
+  url: 'https://eyevinnlab-demo.eyevinn-sgai-ad-proxy.auto.prod.osaas.io',
+  ...
+}
+```
+
+In this example you have the proxied stream available at `https://eyevinnlab-demo.eyevinn-sgai-ad-proxy.auto.prod.osaas.io/loop/master.m3u8`
+
+To insert ad breaks with the `curl` command:
+
+```bash
+% curl "https://eyevinnlab-demo.eyevinn-sgai-ad-proxy.auto.prod.osaas.io/command?in=0&dur=10&pod=2"
+```
+
+This command will insert an ad break at 0 seconds to the live edge with a duration of 10 seconds and a pod number of 2.
+
 ## Getting Started
 
 ### Prerequisites
