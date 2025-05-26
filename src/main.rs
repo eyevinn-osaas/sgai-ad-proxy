@@ -433,9 +433,17 @@ fn wrap_into_assets(
             log::info!("Processing transcoded asset {ad_id}");
 
             let ad = make_new_ad_from_linear(creative.linear.as_ref().unwrap());
+            log::debug!("Tracking event {:?}", ad.tracking);
+
             object! {
                 URI: ad.url.as_str(),
                 DURATION: ad.duration,
+                TRACKING_EVENTS: ad.tracking.iter().map(|tracking| {
+                    object! {
+                        event: tracking.event.as_str(),
+                        uri: tracking.uri.as_str(),
+                    }
+                }).collect::<Vec<_>>(),
             }
         })
         .collect::<Vec<_>>();
