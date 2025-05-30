@@ -3,9 +3,22 @@ use rustls::{ClientConfig, RootCertStore};
 use url::{ParseError, Url};
 
 #[derive(Clone, Debug)]
+pub struct UniversalAdId {
+    pub scheme: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug)]
 pub struct Tracking {
     pub event: String,
-    pub uri: String,
+    pub offset: Option<String>,
+    pub urls: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct VideoClicks {
+    pub click_trackings: Vec<String>,
+    pub click_through: Option<String>,
 }
 
 pub fn get_all_creatives_from_vast<'a>(
@@ -53,22 +66,30 @@ pub fn get_all_transcoded_creatives_from_vast<'a>(
     )
 }
 
-pub fn get_id_from_creative(creative: &vast4_rs::Creative) -> String {
+pub fn get_universal_ad_ids_from_creative(creative: &vast4_rs::Creative) -> Vec<UniversalAdId> {
     creative
-        // Use the UniversalAdId if available, otherwise use the ad_id
         .universal_ad_id
-        .first()
-        .map(|id| id.id.clone())
-        .unwrap_or(creative.ad_id.as_deref().unwrap_or("unknown").into())
-        .into_owned()
+        .iter()
+        .map(|id| UniversalAdId {
+            scheme: id.id_registry.to_string(),
+            value: id.id.to_string(),
+        })
+        .collect()
 }
 
-pub fn get_duration_from_linear(linear: &vast4_rs::Linear) -> u64 {
+pub fn get_duration_from_linear(linear: &vast4_rs::Linear) -> f64 {
     linear
         .duration
         .as_ref()
-        .map(|duration| std::time::Duration::from(duration.clone()).as_secs())
+        .map(|duration| std::time::Duration::from(duration.clone()).as_secs_f64())
         .unwrap_or_default()
+}
+
+pub fn get_skip_offset_from_linear(linear: &vast4_rs::Linear) -> Option<f64> {
+    linear
+        .skipoffset
+        .as_ref()
+        .map(|skipoffset| std::time::Duration::from(skipoffset.clone()).as_secs_f64())
 }
 
 pub fn get_media_urls_from_linear(linear: &vast4_rs::Linear) -> Vec<String> {
@@ -95,16 +116,34 @@ pub fn get_tracking_events_from_linear<'a>(linear: &vast4_rs::Linear) -> Vec<Tra
                 .iter()
                 .map(|tracking| Tracking {
                     event: tracking.event.to_string(),
-                    uri: tracking.uri.to_string(),
+                    offset: tracking.offset.as_ref().map(|offset| offset.to_string()),
+                    urls: vec![tracking.uri.to_string()],
                 })
                 .collect()
         })
         .unwrap_or_default()
 }
 
+pub fn get_video_clicks_from_linear<'a>(linear: &'a vast4_rs::Linear) -> Option<VideoClicks> {
+    linear
+        .video_clicks
+        .as_ref()
+        .map(|video_clicks| VideoClicks {
+            click_trackings: video_clicks
+                .click_trackings
+                .iter()
+                .map(|click_tracking| click_tracking.uri.to_string())
+                .collect(),
+            click_through: video_clicks
+                .click_through
+                .as_ref()
+                .map(|click_through| click_through.uri.to_string()),
+        })
+}
+
 pub fn get_duration_and_media_urls_and_tracking_events_from_linear<'a>(
     linear: &'a vast4_rs::Linear,
-) -> (u64, Vec<String>, Vec<Tracking>) {
+) -> (f64, Vec<String>, Vec<Tracking>) {
     (
         get_duration_from_linear(linear),
         get_media_urls_from_linear(linear),

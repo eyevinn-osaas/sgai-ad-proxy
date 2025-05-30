@@ -1,10 +1,10 @@
 mod utils;
 use utils::{
-    Tracking,
+    Tracking, UniversalAdId,
     base_url, build_forward_url, calculate_expected_program_date_time_list, copy_headers,
     find_program_datetime_tag, get_all_raw_creatives_from_vast,
     get_all_transcoded_creatives_from_vast, get_duration_and_media_urls_and_tracking_events_from_linear,
-    get_header_value, get_id_from_creative, get_query_param, is_media_segment,
+    get_header_value, get_universal_ad_ids_from_creative, get_query_param, is_media_segment,
     make_program_date_time_tag, rustls_config,
 };
 
@@ -55,7 +55,8 @@ enum RequestType {
 #[derive(Clone, Default)]
 struct Ad {
     ad_id: Uuid,
-    duration: u64,
+    universal_ad_ids: Vec<UniversalAdId>,
+    duration: f64,
     url: String,
     requested_at: chrono::DateTime<chrono::Local>,
     tracking: Vec<Tracking>,
@@ -370,18 +371,74 @@ async fn build_ad_server_url(
     Ok(updated_ad_server_url)
 }
 
-fn make_new_ad_from_linear(linear: &vast4_rs::Linear) -> Ad {
+fn make_new_ad_from_creative(creative: &vast4_rs::Creative) -> Ad {
+    let universal_ad_ids = get_universal_ad_ids_from_creative(creative);
+    let linear = creative.linear.as_ref().unwrap();
     let (duration, urls, trackings) = get_duration_and_media_urls_and_tracking_events_from_linear(linear);
     let url = urls.first().unwrap().clone();
     let ad_id = Uuid::new_v4();
 
     Ad {
         ad_id,
+        universal_ad_ids,
         duration,
         url,
         requested_at: chrono::Local::now(),
         tracking: trackings,
     }
+}
+
+fn to_tracking_json(tracking: &Tracking) -> json::JsonValue {
+    if tracking.offset.is_none() {
+        object! {
+            "event": tracking.event.clone(),
+            "urls": tracking.urls.clone(),
+        }
+    } else {
+        object! {
+            "event": tracking.event.clone(),
+            "offset": tracking.offset.as_ref().unwrap().as_str(),
+            "urls": tracking.urls.clone(),
+        }
+    }
+
+}
+
+fn to_ad_asset_json(url: &str, ad: &Ad, start: f64) -> json::JsonValue {
+    object! {
+        "URI": url,
+        "DURATION": ad.duration,
+        "X-AD-CREATIVE-SIGNALING": object! {
+            "version": 2,
+            "type": "slot",
+            "payload": object! {
+                "type": "linear",
+                "start": start,
+                "duration": ad.duration,
+                "identifiers": ad.universal_ad_ids.iter().map(|id| {
+                    object! {
+                        "scheme": id.scheme.as_str(),
+                        "value": id.value.as_str(),
+                    }
+                }).collect::<Vec<_>>(),
+                "tracking": ad.tracking.iter().map(to_tracking_json).collect::<Vec<_>>(),
+            },
+        },
+    }
+}
+
+fn to_asset_list_json_string(assets: Vec<json::JsonValue>, duration: f64) -> String {
+    object! {
+        "ASSETS": assets,
+        "X-AD-CREATIVE-SIGNALING": object! {
+            "version": 2,
+            "type": "pod",
+            "payload": object! {
+                "duration": duration,
+            },
+        },
+    }
+    .pretty(2)
 }
 
 fn wrap_into_assets(
@@ -391,17 +448,14 @@ fn wrap_into_assets(
     user_id: &str,
     available_ads: web::Data<AvailableAds>,
 ) -> String {
+    let mut start_offset = 0.0;
     // Get all linears (regular MP4s) from the VAST
     let raw_assets = get_all_raw_creatives_from_vast(&vast)
         .iter()
         .map(|creative| {
-            let ad_id = get_id_from_creative(creative);
-            log::info!("Processing raw asset {ad_id}");
-
-            let ad = make_new_ad_from_linear(creative.linear.as_ref().unwrap());
-            let duration = ad.duration;
+            let ad = make_new_ad_from_creative(creative);
             let id = ad.ad_id;
-            log::debug!("Tracking event {:?}", ad.tracking);
+            log::info!("Processing raw asset {id}, tracking: {:?}", ad.tracking);
 
             // Save the asset for follow-up requests (this applies to not-transcoded ads)
             available_ads.linears.insert(id, ad.clone());
@@ -413,38 +467,24 @@ fn wrap_into_assets(
                 .append_pair(HLS_PRIMARY_ID, user_id)
                 .append_pair(AD_ID, &id.to_string());
 
-            object! {
-                URI: url.as_str(),
-                DURATION: duration,
-                TRACKING_EVENTS: ad.tracking.iter().map(|tracking| {
-                    object! {
-                        event: tracking.event.as_str(),
-                        uri: tracking.uri.as_str(),
-                    }
-                }).collect::<Vec<_>>(),
-            }
+            let asset = to_ad_asset_json(&url.as_str(), &ad, start_offset);
+            start_offset += ad.duration;
+
+            asset
         })
         .collect::<Vec<_>>();
 
     let transcoded_assets = get_all_transcoded_creatives_from_vast(&vast)
         .iter()
         .map(|creative| {
-            let ad_id = get_id_from_creative(creative);
-            log::info!("Processing transcoded asset {ad_id}");
+            let ad = make_new_ad_from_creative(creative);
+            let id = ad.ad_id;
+            log::info!("Processing transcoded asset {id}, tracking: {:?}", ad.tracking);
 
-            let ad = make_new_ad_from_linear(creative.linear.as_ref().unwrap());
-            log::debug!("Tracking event {:?}", ad.tracking);
+            let asset = to_ad_asset_json(&ad.url, &ad, start_offset);
+            start_offset += ad.duration;
 
-            object! {
-                URI: ad.url.as_str(),
-                DURATION: ad.duration,
-                TRACKING_EVENTS: ad.tracking.iter().map(|tracking| {
-                    object! {
-                        event: tracking.event.as_str(),
-                        uri: tracking.uri.as_str(),
-                    }
-                }).collect::<Vec<_>>(),
-            }
+            asset
         })
         .collect::<Vec<_>>();
 
@@ -453,10 +493,7 @@ fn wrap_into_assets(
         .chain(transcoded_assets.into_iter())
         .collect::<Vec<_>>();
 
-    object! {
-        ASSETS: assets,
-    }
-    .pretty(2)
+    to_asset_list_json_string(assets, start_offset)
 }
 
 fn replace_absolute_url_with_relative_url(m3u8: &mut MasterPlaylist) {
@@ -778,7 +815,7 @@ async fn handle_raw_asset_request(
         .ok_or_else(|| error::ErrorNotFound("Ad not found".to_string()))?;
 
     let segment = MediaSegment::builder()
-        .duration(Duration::from_secs(linear.duration))
+        .duration(Duration::from_secs_f64(linear.duration))
         .uri(linear.url.clone())
         .build()
         .unwrap();
@@ -786,7 +823,7 @@ async fn handle_raw_asset_request(
     // Wrap the MP4 in a media playlist
     let m3u8 = MediaPlaylist::builder()
         .media_sequence(0)
-        .target_duration(Duration::from_secs(linear.duration))
+        .target_duration(Duration::from_secs_f64(linear.duration))
         .segments(vec![segment])
         .has_end_list(true)
         .build()
