@@ -4,6 +4,11 @@
 
 This application is a simple **http** proxy server that inserts ads into a video stream. It is designed to be used in conjunction with a video player (e.g., AVPlayer) that supports Server Guided Ad Insertion (SGAI). The proxy server intercepts the video stream from the origin server and inserts ads into the media playlist as interstitials at specified timepoints.
 
+## Data Flow
+
+The main data flow of Server-Guided Ad Insertion is shown below:
+![dataflow](docs/dataflow.png)
+
 ## Evaluate in Open Source Cloud
 
 This project is also available as a web service in [Eyevinn Open Source Cloud](https://www.osaas.io) and the quickest way to get started.
@@ -208,34 +213,66 @@ fileSequence18.ts
 
 ``` json
 {
-   "ASSETS": [
-      {
-         "URI": "https:/eyevinnlab-adnormalizer.minio-minio.auto.prod.osaas.io/adassets/AAA2FDDDD1232F1/777f6929-ce6f-4712-82d9-aba2da6fd5c2/index.m3u8",
-         "DURATION": 15,
-         "TRACKING_EVENTS": [
+  "ASSETS": [
+    {
+      "URI": "https:/eyevinnlab-adtracking.minio-minio.auto.prod.osaas.io/adassets/AAA2FDDDD1232F1/777f6929-ce6f-4712-82d9-aba2da6fd5c2/index.m3u8",
+      "DURATION": 10,
+      "X-AD-CREATIVE-SIGNALING": {
+        "version": 2,
+        "type": "slot",
+        "payload": {
+          "type": "linear",
+          "start": 0,
+          "duration": 10,
+          "identifiers": [
+            {
+              "scheme": "test-ad-id.eyevinn",
+              "value": "AAA%2FBBBB123%2F1"
+            }
+          ],
+          "tracking": [
             {
               "event": "start",
-              "uri": "http://eyevinnlab-adnormalizer.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/04c216b8-43d2-47c9-bfb1-bf38bf19beec/tracking?adId=alvedon-10s_1&progress=0"
+              "urls": [
+                "http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=0"
+              ]
             },
             {
               "event": "firstQuartile",
-              "uri": "http://eyevinnlab-adnormalizer.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/04c216b8-43d2-47c9-bfb1-bf38bf19beec/tracking?adId=alvedon-10s_1&progress=25"
+              "urls": [
+                "http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=25"
+              ]
             },
             {
               "event": "midpoint",
-              "uri": "http://eyevinnlab-adnormalizer.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/04c216b8-43d2-47c9-bfb1-bf38bf19beec/tracking?adId=alvedon-10s_1&progress=50"
+              "urls": [
+                "http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=50"
+              ]
             },
             {
               "event": "thirdQuartile",
-              "uri": "http://eyevinnlab-adnormalizer.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/04c216b8-43d2-47c9-bfb1-bf38bf19beec/tracking?adId=alvedon-10s_1&progress=75"
+              "urls": [
+                "http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=75"
+              ]
             },
             {
               "event": "complete",
-              "uri": "http://eyevinnlab-adnormalizer.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/04c216b8-43d2-47c9-bfb1-bf38bf19beec/tracking?adId=alvedon-10s_1&progress=100"
+              "urls": [
+                "http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=100"
+              ]
             }
           ]
+        }
       }
-   ]
+    }
+  ],
+  "X-AD-CREATIVE-SIGNALING": {
+    "version": 2,
+    "type": "pod",
+    "payload": {
+      "duration": 10
+    }
+  }
 }
 ```
 

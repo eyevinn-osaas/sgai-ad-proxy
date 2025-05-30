@@ -1,0 +1,73 @@
+title Server-Guided Ad Insertion Dataflow
+
+VideoPlayer
+
+SGAIProxy
+
+AdServer
+
+CDN
+
+VideoPlayer.play {
+  section(MainContent) {
+    // GET /loop/master.m3u8
+    SGAIProxy.Play(streamURL) {
+     
+      MasterPlaylist = CDN.DownloadPlaylist(streamURL)
+
+      return MasterPlaylist
+    }
+    
+    // GET /loop/v0/media.m3u8
+    SGAIProxy.Play(streamURL) {    
+      MediaPlaylist = CDN.DownloadPlaylist(streamURL)
+
+      InsertAdBreaks(MediaPlaylist)
+
+      // MediaPlayList with interstitial tags, for example:
+      // #EXT-X-DATERANGE:ID="ad_slot0",CLASS="com.apple.hls.interstitial",
+      // START-DATE="2024-10-30T12:52:47.207+01:00",DURATION=15,
+      // X-ASSET-LIST="http://localhost:3333/interstitials.m3u8?_HLS_interstitial_id=ad_slot0",
+      // X-RESTRICT="SKIP,JUMP",X-SNAP="IN,OUT"
+      return NewMediaPlaylist
+    }
+
+    loop("Every segment") {
+    // GET /loop/v0/segment1.ts
+      MediaSegment = CDN.Download()
+    }
+  }
+  
+  section(AdBreak) {
+  // GET //interstitials.m3u8?_HLS_interstitial_id=ad_slot0&_HLS_primary_id=946DB62E...
+    SGAIProxy.Play(interstitial) {
+      ParseQueryParameters("_HLS_interstitial_id", "_HLS_primary_id")
+
+      XML = AdServer.FetchVastResponse(sessionId, duration, number)
+
+      // ID, MediaFile
+      Creatives = ParseVAST(XML)
+
+      JsonArray = MakeAsset(Creatives)
+
+  //{
+  //	"ASSETS": [
+  //{
+  //			"URI": "https:/eyevinnlab-adtracking.minio-minio.auto.prod.osaas.io/adassets/AAA2FDDDD1232F1/777f6929/index.m3u8",
+  //			"DURATION": 15,
+  //			"X-AD-CREATIVE-SIGNALING": {
+  //				... 
+      return JsonArray
+    }
+    
+    loop("Every asset") {
+          // GET "https:/eyevinnlab-adtracking.minio-minio.auto.prod.osaas.io/adassets/AAA2FDDDD1232F1/777f6929/index.m3u8"
+
+      AdPlaylist = CDN.DownloadPlaylist(AssetURL)
+      loop("Every segment") {
+        // GET /commertial/ad1.ts
+        AdSegment = CDN.Download()
+      }
+    }
+  }
+}
