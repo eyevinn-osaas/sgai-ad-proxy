@@ -232,31 +232,31 @@ fileSequence18.ts
           ],
           "tracking": [
             {
-              "event": "start",
+              "type": "start",
               "urls": [
                 "http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=0"
               ]
             },
             {
-              "event": "firstQuartile",
+              "type": "firstQuartile",
               "urls": [
                 "http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=25"
               ]
             },
             {
-              "event": "midpoint",
+              "type": "midpoint",
               "urls": [
                 "http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=50"
               ]
             },
             {
-              "event": "thirdQuartile",
+              "type": "thirdQuartile",
               "urls": [
                 "http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=75"
               ]
             },
             {
-              "event": "complete",
+              "type": "complete",
               "urls": [
                 "http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=100"
               ]

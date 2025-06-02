@@ -391,12 +391,12 @@ fn make_new_ad_from_creative(creative: &vast4_rs::Creative) -> Ad {
 fn to_tracking_json(tracking: &Tracking) -> json::JsonValue {
     if tracking.offset.is_none() {
         object! {
-            "event": tracking.event.clone(),
+            "type": tracking.event.clone(),
             "urls": tracking.urls.clone(),
         }
     } else {
         object! {
-            "event": tracking.event.clone(),
+            "type": tracking.event.clone(),
             "offset": tracking.offset.as_ref().unwrap().as_str(),
             "urls": tracking.urls.clone(),
         }
