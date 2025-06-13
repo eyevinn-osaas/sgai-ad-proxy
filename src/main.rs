@@ -195,6 +195,10 @@ struct CliArguments {
     /// Default number of ad slots to generate
     #[clap(long, env, verbatim_doc_comment, default_value_t = String::from(""))]
     default_ad_number: String,
+
+    /// Return test assets instead of real ads
+    #[clap(long, env, verbatim_doc_comment, default_value_t = false)]
+    return_test_assets: bool,
 }
 
 #[derive(ValueEnum, Clone, Debug, PartialEq)]
@@ -220,7 +224,8 @@ struct ServerConfig {
     insertion_mode: InsertionMode,
     default_ad_duration: u64,
     default_repeating_cycle: u64,
-    default_ad_number: u64
+    default_ad_number: u64,
+    return_test_assets: bool,
 }
 
 impl ServerConfig {
@@ -231,7 +236,8 @@ impl ServerConfig {
         insertion_mode: InsertionMode,
         default_ad_duration: u64,
         default_repeating_cycle: u64,
-        default_ad_number: u64
+        default_ad_number: u64,
+        return_test_assets: bool,
     ) -> Self {
         Self {
             forward_url,
@@ -240,7 +246,8 @@ impl ServerConfig {
             insertion_mode,
             default_ad_duration,
             default_repeating_cycle,
-            default_ad_number
+            default_ad_number,
+            return_test_assets,
         }
     }
 
@@ -252,7 +259,8 @@ impl ServerConfig {
             "insertion_mode": self.insertion_mode.to_str(),
             "default_ad_duration": self.default_ad_duration,
             "default_repeating_cycle": self.default_repeating_cycle,
-            "default_ad_number": self.default_ad_number
+            "default_ad_number": self.default_ad_number,
+            "return_test_assets": self.return_test_assets,
         }
     }
 }
@@ -439,6 +447,40 @@ fn to_asset_list_json_string(assets: Vec<json::JsonValue>, duration: f64) -> Str
         },
     }
     .pretty(2)
+}
+
+fn make_test_assets() -> String {
+    let duration = 13.0; // Duration of the ad in seconds
+    let ad = Ad {
+        ad_id: Uuid::new_v4(),
+        universal_ad_ids: vec![UniversalAdId {
+            scheme: "test-ad-id.eyevinn".to_string(),
+            value: "0001".to_string(),
+        }],
+        duration: duration,
+        url: "https://s3.amazonaws.com/qa.jwplayer.com/hlsjs/muxed-fmp4/hls.m3u8".to_string(),
+        requested_at: chrono::Local::now(),
+        tracking: vec![
+            Tracking {
+                event: "start".to_string(),
+                offset: None,
+                urls: vec!["http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=0".to_string()],
+            },
+            Tracking {
+                event: "midpoint".to_string(),
+                offset: None,
+                urls: vec!["http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=50".to_string()],
+            },
+            Tracking {
+                event: "complete".to_string(),
+                offset: None,
+                urls: vec!["http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=100".to_string()],
+            },
+        ],
+    };
+
+    let asset = to_ad_asset_json(&ad.url, &ad, 0.0);
+    to_asset_list_json_string(vec![asset], duration)
 }
 
 fn wrap_into_assets(
@@ -745,6 +787,7 @@ async fn handle_interstitials(
     ad_server_url: web::Data<Url>,
     available_ads: web::Data<AvailableAds>,
     available_slots: web::Data<AvailableAdSlots>,
+    config: web::Data<ServerConfig>,
     client: web::Data<Client>,
     user_defined_query_params: web::Data<UserDefinedQueryParams>,
 ) -> Result<HttpResponse, Error> {
@@ -755,7 +798,7 @@ async fn handle_interstitials(
         get_query_param(&req, HLS_INTERSTITIAL_ID).unwrap_or_else(|| "default_ad".to_string());
     let user_id =
         get_query_param(&req, HLS_PRIMARY_ID).unwrap_or_else(|| "default_user".to_string());
-
+    
     // For non-transcoded ads
     if let Some(linear_id) = get_query_param(&req, AD_ID) {
         return handle_raw_asset_request(&interstitial_id, &linear_id, &user_id, available_ads)
@@ -790,7 +833,13 @@ async fn handle_interstitials(
         // Return an empty VAST in case of parsing error
         .unwrap_or_default();
 
-    let response = wrap_into_assets(vast, req_url, &interstitial_id, &user_id, available_ads);
+    let response = if config.return_test_assets {
+        log::info!("Returning test assets instead of real ads.");
+        make_test_assets()
+    } else {
+        // Wrap the VAST into JSON
+        wrap_into_assets(vast, req_url, &interstitial_id, &user_id, available_ads)
+    };
     log::info!("asset json reply \n{response}");
 
     Ok(HttpResponse::Ok()
@@ -1053,7 +1102,8 @@ async fn main() -> io::Result<()> {
         args.ad_insertion_mode,
         default_ad_duration,
         default_repeating_cycle,
-        default_ad_number
+        default_ad_number,
+        args.return_test_assets,
     );
     let user_defined_query_params = UserDefinedQueryParams::default();
 
