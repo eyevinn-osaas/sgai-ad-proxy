@@ -467,9 +467,19 @@ fn make_test_assets() -> String {
                 urls: vec!["http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=0".to_string()],
             },
             Tracking {
+                event: "firstQuartile".to_string(),
+                offset: None,
+                urls: vec!["http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=25".to_string()],
+            },
+            Tracking {
                 event: "midpoint".to_string(),
                 offset: None,
                 urls: vec!["http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=50".to_string()],
+            },
+            Tracking {
+                event: "thirdQuartile".to_string(),
+                offset: None,
+                urls: vec!["http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=75".to_string()],
             },
             Tracking {
                 event: "complete".to_string(),
