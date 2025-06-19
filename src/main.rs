@@ -396,6 +396,23 @@ fn make_new_ad_from_creative(creative: &vast4_rs::Creative) -> Ad {
     }
 }
 
+fn make_test_ad_from_creative(creative: &vast4_rs::Creative) -> Ad {
+    let mut ad = make_new_ad_from_creative(creative);
+    ad.url = "https://s3.amazonaws.com/qa.jwplayer.com/hlsjs/muxed-fmp4/hls.m3u8".to_string();
+    ad.duration = 13.0; // Duration of the ad in seconds
+
+    // Replace the http with https in urls
+    ad.tracking.iter_mut().for_each(|tracking| {
+        tracking.urls.iter_mut().for_each(|url| {
+            if url.starts_with("http://") {
+                *url = url.replace("http://", "https://");
+            }
+        });
+    });
+
+    ad
+}
+
 fn to_tracking_json(tracking: &Tracking) -> json::JsonValue {
     if tracking.offset.is_none() {
         object! {
@@ -449,55 +466,12 @@ fn to_asset_list_json_string(assets: Vec<json::JsonValue>, duration: f64) -> Str
     .pretty(2)
 }
 
-fn make_test_assets() -> String {
-    let duration = 13.0; // Duration of the ad in seconds
-    let ad = Ad {
-        ad_id: Uuid::new_v4(),
-        universal_ad_ids: vec![UniversalAdId {
-            scheme: "test-ad-id.eyevinn".to_string(),
-            value: "0001".to_string(),
-        }],
-        duration: duration,
-        url: "https://s3.amazonaws.com/qa.jwplayer.com/hlsjs/muxed-fmp4/hls.m3u8".to_string(),
-        requested_at: chrono::Local::now(),
-        tracking: vec![
-            Tracking {
-                event: "start".to_string(),
-                offset: None,
-                urls: vec!["http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=0".to_string()],
-            },
-            Tracking {
-                event: "firstQuartile".to_string(),
-                offset: None,
-                urls: vec!["http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=25".to_string()],
-            },
-            Tracking {
-                event: "midpoint".to_string(),
-                offset: None,
-                urls: vec!["http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=50".to_string()],
-            },
-            Tracking {
-                event: "thirdQuartile".to_string(),
-                offset: None,
-                urls: vec!["http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=75".to_string()],
-            },
-            Tracking {
-                event: "complete".to_string(),
-                offset: None,
-                urls: vec!["http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=100".to_string()],
-            },
-        ],
-    };
-
-    let asset = to_ad_asset_json(&ad.url, &ad, 0.0);
-    to_asset_list_json_string(vec![asset], duration)
-}
-
 fn wrap_into_assets(
     vast: vast4_rs::Vast,
     req_url: Url,
     interstitial_id: &str,
     user_id: &str,
+    return_test_assets: bool,
     available_ads: web::Data<AvailableAds>,
 ) -> String {
     let mut start_offset = 0.0;
@@ -505,22 +479,28 @@ fn wrap_into_assets(
     let raw_assets = get_all_raw_creatives_from_vast(&vast)
         .iter()
         .map(|creative| {
-            let ad = make_new_ad_from_creative(creative);
-            let id = ad.ad_id;
-            log::info!("Processing raw asset {id}, tracking: {:?}", ad.tracking);
+            let asset = if return_test_assets {
+                let ad = make_test_ad_from_creative(creative);
+                start_offset += ad.duration;
+                to_ad_asset_json(&ad.url, &ad, start_offset)
+            } else {
+                let ad = make_new_ad_from_creative(creative);
+                let id = ad.ad_id;
+                log::info!("Processing raw asset {id}, tracking: {:?}", ad.tracking);
 
-            // Save the asset for follow-up requests (this applies to not-transcoded ads)
-            available_ads.linears.insert(id, ad.clone());
+                // Save the asset for follow-up requests (this applies to not-transcoded ads)
+                available_ads.linears.insert(id, ad.clone());
 
-            let mut url = req_url.clone();
-            url.query_pairs_mut()
-                .clear()
-                .append_pair(HLS_INTERSTITIAL_ID, interstitial_id)
-                .append_pair(HLS_PRIMARY_ID, user_id)
-                .append_pair(AD_ID, &id.to_string());
+                let mut url = req_url.clone();
+                url.query_pairs_mut()
+                    .clear()
+                    .append_pair(HLS_INTERSTITIAL_ID, interstitial_id)
+                    .append_pair(HLS_PRIMARY_ID, user_id)
+                    .append_pair(AD_ID, &id.to_string());
 
-            let asset = to_ad_asset_json(&url.as_str(), &ad, start_offset);
-            start_offset += ad.duration;
+                start_offset += ad.duration;
+                to_ad_asset_json(&url.as_str(), &ad, start_offset)
+            };
 
             asset
         })
@@ -842,14 +822,8 @@ async fn handle_interstitials(
         })
         // Return an empty VAST in case of parsing error
         .unwrap_or_default();
-
-    let response = if config.return_test_assets {
-        log::info!("Returning test assets instead of real ads.");
-        make_test_assets()
-    } else {
-        // Wrap the VAST into JSON
-        wrap_into_assets(vast, req_url, &interstitial_id, &user_id, available_ads)
-    };
+    // Wrap the VAST into JSON
+    let response = wrap_into_assets(vast, req_url, &interstitial_id, &user_id, config.return_test_assets, available_ads);
     log::info!("asset json reply \n{response}");
 
     Ok(HttpResponse::Ok()
