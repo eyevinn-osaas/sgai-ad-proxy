@@ -1,10 +1,11 @@
 mod utils;
+use rustls::ClientConfig;
 use utils::{
     Tracking, UniversalAdId,
     base_url, build_forward_url, calculate_expected_program_date_time_list, copy_headers,
     find_program_datetime_tag, get_all_raw_creatives_from_vast,
     get_all_transcoded_creatives_from_vast, get_duration_and_media_urls_and_tracking_events_from_linear,
-    get_header_value, get_universal_ad_ids_from_creative, get_query_param, is_media_segment,
+    get_header_value, get_universal_ad_ids_from_creative, get_query_param, is_media_segment, is_fragmented_mp4_vod_media_playlist,
     make_program_date_time_tag, rustls_config,
 };
 
@@ -50,6 +51,25 @@ enum RequestType {
     MediaPlayList,
     Segment,
     Other,
+}
+
+#[derive(Clone, Debug)]
+struct TestAsset {
+    url: Url,
+    duration: f64,
+}
+
+impl TestAsset {
+    fn new(url: Url, duration: f64) -> Self {
+        Self { url, duration }
+    }
+    
+    fn to_json(&self) -> json::JsonValue {
+        object! {
+            "url": self.url.as_str(),
+            "duration": self.duration,
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -196,9 +216,10 @@ struct CliArguments {
     #[clap(long, env, verbatim_doc_comment, default_value_t = String::from(""))]
     default_ad_number: String,
 
-    /// Return test assets instead of real ads
-    #[clap(long, env, verbatim_doc_comment, default_value_t = false)]
-    return_test_assets: bool,
+    /// Replace raw MP4 assets with this test assets (it has to be a fragmented MP4 VoD **MEDIA** playlist)
+    /// e.g., https://s3.amazonaws.com/qa.jwplayer.com/hlsjs/muxed-fmp4/hls.m3u8
+    #[clap(long, env, verbatim_doc_comment, default_value_t = String::from(""))]
+    test_asset_url: String,
 }
 
 #[derive(ValueEnum, Clone, Debug, PartialEq)]
@@ -225,7 +246,7 @@ struct ServerConfig {
     default_ad_duration: u64,
     default_repeating_cycle: u64,
     default_ad_number: u64,
-    return_test_assets: bool,
+    test_asset: Option<TestAsset>,
 }
 
 impl ServerConfig {
@@ -237,7 +258,7 @@ impl ServerConfig {
         default_ad_duration: u64,
         default_repeating_cycle: u64,
         default_ad_number: u64,
-        return_test_assets: bool,
+        test_asset: Option<TestAsset>,
     ) -> Self {
         Self {
             forward_url,
@@ -247,7 +268,7 @@ impl ServerConfig {
             default_ad_duration,
             default_repeating_cycle,
             default_ad_number,
-            return_test_assets,
+            test_asset,
         }
     }
 
@@ -260,7 +281,7 @@ impl ServerConfig {
             "default_ad_duration": self.default_ad_duration,
             "default_repeating_cycle": self.default_repeating_cycle,
             "default_ad_number": self.default_ad_number,
-            "return_test_assets": self.return_test_assets,
+            "test_asset": self.test_asset.as_ref().map(|asset| asset.to_json()).unwrap_or_else(|| object! {}),
         }
     }
 }
@@ -396,10 +417,10 @@ fn make_new_ad_from_creative(creative: &vast4_rs::Creative) -> Ad {
     }
 }
 
-fn make_test_ad_from_creative(creative: &vast4_rs::Creative) -> Ad {
+fn make_test_ad_from_creative(creative: &vast4_rs::Creative, test_asset: &TestAsset) -> Ad {
     let mut ad = make_new_ad_from_creative(creative);
-    ad.url = "https://s3.amazonaws.com/qa.jwplayer.com/hlsjs/muxed-fmp4/hls.m3u8".to_string();
-    ad.duration = 13.0; // Duration of the ad in seconds
+    ad.url = test_asset.url.as_str().to_string();
+    ad.duration = test_asset.duration;
 
     // Replace the http with https in urls
     ad.tracking.iter_mut().for_each(|tracking| {
@@ -471,7 +492,7 @@ fn wrap_into_assets(
     req_url: Url,
     interstitial_id: &str,
     user_id: &str,
-    return_test_assets: bool,
+    test_asset: &Option<TestAsset>,
     available_ads: web::Data<AvailableAds>,
 ) -> String {
     let mut start_offset = 0.0;
@@ -479,8 +500,9 @@ fn wrap_into_assets(
     let raw_assets = get_all_raw_creatives_from_vast(&vast)
         .iter()
         .map(|creative| {
-            let asset = if return_test_assets {
-                let ad = make_test_ad_from_creative(creative);
+            let asset = if test_asset.is_some() {
+                let ad = make_test_ad_from_creative(creative, &test_asset.as_ref().unwrap());
+                
                 start_offset += ad.duration;
                 to_ad_asset_json(&ad.url, &ad, start_offset)
             } else {
@@ -823,7 +845,7 @@ async fn handle_interstitials(
         // Return an empty VAST in case of parsing error
         .unwrap_or_default();
     // Wrap the VAST into JSON
-    let response = wrap_into_assets(vast, req_url, &interstitial_id, &user_id, config.return_test_assets, available_ads);
+    let response = wrap_into_assets(vast, req_url, &interstitial_id, &user_id, &config.test_asset, available_ads);
     log::info!("asset json reply \n{response}");
 
     Ok(HttpResponse::Ok()
@@ -1033,6 +1055,35 @@ fn parse_default_values(args: &CliArguments) -> (u64, u64, u64) {
     )
 }
 
+async fn parse_test_asset_url(config: Arc<ClientConfig>, path: &str) -> Option<TestAsset> {
+    if path.is_empty() {
+        log::warn!("Test asset URL is empty.");
+        return None;
+    }
+
+    log::info!("Parsing test asset URL: {path}");
+    let url = Url::parse(path).ok()?;
+    let client = make_https_client(config);
+    let payload = client.get(url.as_str()).send().await.ok()?.body().await.ok()?;
+    let m3u8 = MediaPlaylist::try_from(std::str::from_utf8(&payload).ok()?).ok()?;
+    if !is_fragmented_mp4_vod_media_playlist(&m3u8) {
+        log::error!("Test asset at {path} is not a valid fragmented MP4 VoD media playlist.");
+        return None;
+    }
+    
+    let duration = m3u8.segments.iter().map(|(_, s)| s.duration.duration().as_secs_f64()).sum();    
+    Some(TestAsset::new(url, duration))
+}
+
+fn make_https_client(config: Arc<rustls::ClientConfig>) -> Client {
+    Client::builder()
+        // Add User-Agent header to make requests
+        .add_default_header((header::USER_AGENT, "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0.1 Safari/605.1.15"))
+        // a "connector" wraps the stream into an encrypted connection
+        .connector(Connector::new().rustls_0_23(config.clone()))
+        .finish()
+}
+
 #[actix_web::main]
 async fn main() -> io::Result<()> {
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
@@ -1043,6 +1094,9 @@ async fn main() -> io::Result<()> {
 
     let master_playlist_url =
         Url::parse(&args.master_playlist_url).expect("Invalid master playlist URL");
+
+    let client_tls_config = Arc::new(rustls_config());
+    let test_asset = parse_test_asset_url(client_tls_config.clone(), &args.test_asset_url).await;
 
     // Forward URL is the base URL of the master playlist
     let forward_url = base_url(&master_playlist_url).expect("Invalid forward URL");
@@ -1075,8 +1129,10 @@ async fn main() -> io::Result<()> {
     if args.ad_insertion_mode==InsertionMode::Static && default_repeating_cycle < default_ad_duration {
         log::warn!("Ad duration is greater than the repeating cycle. This may cause issues for live streams.");
     }
+    if let Some(ref asset) = test_asset {
+        log::info!("Test asset URL: {}, duration: {}s", asset.url, asset.duration);
+    }
 
-    let client_tls_config = Arc::new(rustls_config());
     let available_slots = AvailableAdSlots::default();
     let available_ads = AvailableAds::default();
     let server_config = ServerConfig::new(
@@ -1087,7 +1143,7 @@ async fn main() -> io::Result<()> {
         default_ad_duration,
         default_repeating_cycle,
         default_ad_number,
-        args.return_test_assets,
+        test_asset,
     );
     let user_defined_query_params = UserDefinedQueryParams::default();
 
@@ -1095,12 +1151,7 @@ async fn main() -> io::Result<()> {
         let cors = actix_cors::Cors::permissive();
 
         // create https client inside `HttpServer::new` closure to have one per worker thread
-        let client = Client::builder()
-            // Freewheel requires a User-Agent header to make requests
-            .add_default_header((header::USER_AGENT, "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0.1 Safari/605.1.15"))
-            // a "connector" wraps the stream into an encrypted connection
-            .connector(Connector::new().rustls_0_23(Arc::clone(&client_tls_config)))
-            .finish();
+        let client = make_https_client(client_tls_config.clone());
 
         App::new()
             .app_data(web::Data::new(client))

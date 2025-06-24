@@ -146,6 +146,9 @@ Options:
           Repeat the ad break every 'n' seconds [env: DEFAULT_REPEATING_CYCLE=] [default: 30]
       --default-ad-number <DEFAULT_AD_NUMBER>
           Default number of ad slots to generate [env: DEFAULT_AD_NUMBER=] [default: 1000]
+      --test-asset-url <TEST_ASSET_URL>
+          Replace raw MP4 assets with this test assets (it has to be a fragmented MP4 VoD **MEDIA** playlist)
+          e.g., https://s3.amazonaws.com/qa.jwplayer.com/hlsjs/muxed-fmp4/hls.m3u8 [env: TEST_ASSET_URL=] [default: ]
 ```
 
 ### Insert Ads Dynamically
@@ -280,8 +283,9 @@ fileSequence18.ts
 
 * In order to place the interstitials at the correct timepoints, the origin media playlist should contain the `EXT-X-PROGRAM-DATE-TIME` tag. For Live stream, the origin media playlist will be returned
 if this tag is not found so no interstitials will be inserted. For VoD, the proxy server will try to use its starting time as reference if the `EXT-X-PROGRAM-DATE-TIME` tag is not found.
-* The creatives from ad server are mostly regular MPEG-4 files (ftyp+moov+mdat). While AVPlayer can handle regular MP4 files, other video player like hls.js can only handle fragmented MPEG-4 files (ftyp+moov+moof+mdat+moof+mdat+…). Therefore, it would fail to play out the interstitials.
+* The creatives from test ad server are mostly regular MPEG-4 files (ftyp+moov+mdat). While AVPlayer can handle regular MP4 files, other video player like hls.js or media3player(Android) can only handle fragmented MPEG-4 files (ftyp+moov+moof+mdat+moof+mdat+…). Therefore, it would fail to play out the interstitials.
 Ideally, raw MP4 creatives should be transcoded to fMP4 or TS files first. One can use the [Encore](https://github.com/svt/encore) to transocde them into HLS stream or use the [Ad Normalizer](https://app.osaas.io/dashboard/service/eyevinn-ad-normalizer) to fetch transcoded creatives directly.
+Alternatively, one can use the `--test-asset-url` option to replace the raw MP4 assets' url with a test asset URL that contains a fragmented MP4 VoD **MEDIA** playlist. For example, `https://s3.amazonaws.com/qa.jwplayer.com/hlsjs/muxed-fmp4/hls.m3u8`.
 * When a client joins the live stream during an ad break, it should append the request with *_HLS_start_offset* query parameter to indicate the offset in seconds of the playback start point from the beginning of the interstitial. One can use this to customize interstitial content based on the starting offset.
 * The proxy server can only handle one HLS stream at a time. To switch streams, the server must be restarted.
 

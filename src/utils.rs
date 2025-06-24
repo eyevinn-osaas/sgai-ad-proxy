@@ -221,6 +221,16 @@ pub fn is_transcoded_media_segment(path: &str) -> bool {
     path.contains(".m3u8")
 }
 
+pub fn is_fragmented_mp4_vod_media_playlist(playlist: &hls_m3u8::MediaPlaylist) -> bool {
+    playlist.has_end_list
+        && playlist.segments.find_first().is_some_and(|segment| {
+            segment
+                .map
+                .as_ref()
+                .is_some_and(|map| !map.uri().is_empty())
+        })
+}
+
 pub fn fixed_offset_to_local(
     date: chrono::DateTime<chrono::FixedOffset>,
 ) -> chrono::DateTime<chrono::Local> {
