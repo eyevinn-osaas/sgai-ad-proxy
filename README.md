@@ -4,6 +4,70 @@
 
 This application is a simple **http** proxy server that inserts ads into a video stream. It is designed to be used in conjunction with a video player (e.g., AVPlayer) that supports Server Guided Ad Insertion (SGAI). The proxy server intercepts the video stream from the origin server and inserts ads into the media playlist as interstitials at specified timepoints.
 
+## Data Flow
+
+The main data flow of Server-Guided Ad Insertion is shown below:
+![dataflow](docs/dataflow.png)
+
+## Evaluate in Open Source Cloud
+
+This project is also available as a web service in [Eyevinn Open Source Cloud](https://www.osaas.io) and the quickest way to get started.
+
+Obtain your personal access token from the Open Source Cloud web console (settings/API) and store it in the environment variable `OSC_ACCESS_TOKEN`
+
+```bash
+% export OSC_ACCESS_TOKEN=<personal-access-token>
+```
+
+Create a test HLS live source.
+
+```bash
+% npx -y @osaas/cli create eyevinn-docker-testsrc-hls-live demo
+Instance created:
+{
+  name: 'demo',
+  url: 'https://eyevinnlab-demo.eyevinn-docker-testsrc-hls-live.auto.prod.osaas.io',
+  ...
+}
+```
+
+Create a test ad server instance.
+
+```bash
+% npx -y @osaas/cli create eyevinn-test-adserver demo
+Instance created:
+{
+  name: 'demo',
+  url: 'https://eyevinnlab-demo.eyevinn-test-adserver.auto.prod.osaas.io',
+  ...
+}
+```
+
+Create the SGAI ad proxy.
+
+```bash
+% npx -y @osaas/cli create eyevinn-sgai-ad-proxy demo \
+  -o VastEndpoint="https://eyevinnlab-demo.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/vast?dur=[template.duration]&uid=[template.sessionId]&ps=[template.pod]" \
+  -o OriginUrl="https://eyevinnlab-demo.eyevinn-docker-testsrc-hls-live.auto.prod.osaas.io/loop/master.m3u8" \
+  -o InsertionMode=dynamic
+Instance created:
+{
+  name: 'demo',
+  url: 'https://eyevinnlab-demo.eyevinn-sgai-ad-proxy.auto.prod.osaas.io',
+  ...
+}
+```
+
+In this example you have the proxied stream available at `https://eyevinnlab-demo.eyevinn-sgai-ad-proxy.auto.prod.osaas.io/loop/master.m3u8`
+
+To insert ad breaks with the `curl` command:
+
+```bash
+% curl "https://eyevinnlab-demo.eyevinn-sgai-ad-proxy.auto.prod.osaas.io/command?in=0&dur=10&pod=2"
+```
+
+This command will insert an ad break at 0 seconds to the live edge with a duration of 10 seconds and a pod number of 2.
+
 ## Getting Started
 
 ### Prerequisites
@@ -82,6 +146,9 @@ Options:
           Repeat the ad break every 'n' seconds [env: DEFAULT_REPEATING_CYCLE=] [default: 30]
       --default-ad-number <DEFAULT_AD_NUMBER>
           Default number of ad slots to generate [env: DEFAULT_AD_NUMBER=] [default: 1000]
+      --test-asset-url <TEST_ASSET_URL>
+          Replace raw MP4 assets with this test assets (it has to be a fragmented MP4 VoD **MEDIA** playlist)
+          e.g., https://s3.amazonaws.com/qa.jwplayer.com/hlsjs/muxed-fmp4/hls.m3u8 [env: TEST_ASSET_URL=] [default: ]
 ```
 
 ### Insert Ads Dynamically
@@ -149,34 +216,66 @@ fileSequence18.ts
 
 ``` json
 {
-   "ASSETS": [
-      {
-         "URI": "https:/eyevinnlab-adnormalizer.minio-minio.auto.prod.osaas.io/adassets/AAA2FDDDD1232F1/777f6929-ce6f-4712-82d9-aba2da6fd5c2/index.m3u8",
-         "DURATION": 15,
-         "TRACKING_EVENTS": [
+  "ASSETS": [
+    {
+      "URI": "https:/eyevinnlab-adtracking.minio-minio.auto.prod.osaas.io/adassets/AAA2FDDDD1232F1/777f6929-ce6f-4712-82d9-aba2da6fd5c2/index.m3u8",
+      "DURATION": 10,
+      "X-AD-CREATIVE-SIGNALING": {
+        "version": 2,
+        "type": "slot",
+        "payload": {
+          "type": "linear",
+          "start": 0,
+          "duration": 10,
+          "identifiers": [
             {
-              "event": "start",
-              "uri": "http://eyevinnlab-adnormalizer.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/04c216b8-43d2-47c9-bfb1-bf38bf19beec/tracking?adId=alvedon-10s_1&progress=0"
+              "scheme": "test-ad-id.eyevinn",
+              "value": "AAA%2FBBBB123%2F1"
+            }
+          ],
+          "tracking": [
+            {
+              "type": "start",
+              "urls": [
+                "http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=0"
+              ]
             },
             {
-              "event": "firstQuartile",
-              "uri": "http://eyevinnlab-adnormalizer.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/04c216b8-43d2-47c9-bfb1-bf38bf19beec/tracking?adId=alvedon-10s_1&progress=25"
+              "type": "firstQuartile",
+              "urls": [
+                "http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=25"
+              ]
             },
             {
-              "event": "midpoint",
-              "uri": "http://eyevinnlab-adnormalizer.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/04c216b8-43d2-47c9-bfb1-bf38bf19beec/tracking?adId=alvedon-10s_1&progress=50"
+              "type": "midpoint",
+              "urls": [
+                "http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=50"
+              ]
             },
             {
-              "event": "thirdQuartile",
-              "uri": "http://eyevinnlab-adnormalizer.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/04c216b8-43d2-47c9-bfb1-bf38bf19beec/tracking?adId=alvedon-10s_1&progress=75"
+              "type": "thirdQuartile",
+              "urls": [
+                "http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=75"
+              ]
             },
             {
-              "event": "complete",
-              "uri": "http://eyevinnlab-adnormalizer.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/04c216b8-43d2-47c9-bfb1-bf38bf19beec/tracking?adId=alvedon-10s_1&progress=100"
+              "type": "complete",
+              "urls": [
+                "http://eyevinnlab-adtracking.eyevinn-test-adserver.auto.prod.osaas.io/api/v1/sessions/158281fa-8ef1-43b2-a04c-057ee854cdeb/tracking?adId=alvedon-10s_1&progress=100"
+              ]
             }
           ]
+        }
       }
-   ]
+    }
+  ],
+  "X-AD-CREATIVE-SIGNALING": {
+    "version": 2,
+    "type": "pod",
+    "payload": {
+      "duration": 10
+    }
+  }
 }
 ```
 
@@ -184,8 +283,9 @@ fileSequence18.ts
 
 * In order to place the interstitials at the correct timepoints, the origin media playlist should contain the `EXT-X-PROGRAM-DATE-TIME` tag. For Live stream, the origin media playlist will be returned
 if this tag is not found so no interstitials will be inserted. For VoD, the proxy server will try to use its starting time as reference if the `EXT-X-PROGRAM-DATE-TIME` tag is not found.
-* The creatives from ad server are mostly regular MPEG-4 files (ftyp+moov+mdat). While AVPlayer can handle regular MP4 files, other video player like hls.js can only handle fragmented MPEG-4 files (ftyp+moov+moof+mdat+moof+mdat+…). Therefore, it would fail to play out the interstitials.
+* The creatives from test ad server are mostly regular MPEG-4 files (ftyp+moov+mdat). While AVPlayer can handle regular MP4 files, other video player like hls.js or media3player(Android) can only handle fragmented MPEG-4 files (ftyp+moov+moof+mdat+moof+mdat+…). Therefore, it would fail to play out the interstitials.
 Ideally, raw MP4 creatives should be transcoded to fMP4 or TS files first. One can use the [Encore](https://github.com/svt/encore) to transocde them into HLS stream or use the [Ad Normalizer](https://app.osaas.io/dashboard/service/eyevinn-ad-normalizer) to fetch transcoded creatives directly.
+Alternatively, one can use the `--test-asset-url` option to replace the raw MP4 assets' url with a test asset URL that contains a fragmented MP4 VoD **MEDIA** playlist. For example, `https://s3.amazonaws.com/qa.jwplayer.com/hlsjs/muxed-fmp4/hls.m3u8`.
 * When a client joins the live stream during an ad break, it should append the request with *_HLS_start_offset* query parameter to indicate the offset in seconds of the playback start point from the beginning of the interstitial. One can use this to customize interstitial content based on the starting offset.
 * The proxy server can only handle one HLS stream at a time. To switch streams, the server must be restarted.
 

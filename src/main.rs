@@ -1,10 +1,11 @@
 mod utils;
+use rustls::ClientConfig;
 use utils::{
-    Tracking,
+    Tracking, UniversalAdId,
     base_url, build_forward_url, calculate_expected_program_date_time_list, copy_headers,
     find_program_datetime_tag, get_all_raw_creatives_from_vast,
     get_all_transcoded_creatives_from_vast, get_duration_and_media_urls_and_tracking_events_from_linear,
-    get_header_value, get_id_from_creative, get_query_param, is_media_segment,
+    get_header_value, get_universal_ad_ids_from_creative, get_query_param, is_media_segment, is_fragmented_mp4_vod_media_playlist,
     make_program_date_time_tag, rustls_config,
 };
 
@@ -52,10 +53,30 @@ enum RequestType {
     Other,
 }
 
+#[derive(Clone, Debug)]
+struct TestAsset {
+    url: Url,
+    duration: f64,
+}
+
+impl TestAsset {
+    fn new(url: Url, duration: f64) -> Self {
+        Self { url, duration }
+    }
+    
+    fn to_json(&self) -> json::JsonValue {
+        object! {
+            "url": self.url.as_str(),
+            "duration": self.duration,
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 struct Ad {
     ad_id: Uuid,
-    duration: u64,
+    universal_ad_ids: Vec<UniversalAdId>,
+    duration: f64,
     url: String,
     requested_at: chrono::DateTime<chrono::Local>,
     tracking: Vec<Tracking>,
@@ -194,6 +215,11 @@ struct CliArguments {
     /// Default number of ad slots to generate
     #[clap(long, env, verbatim_doc_comment, default_value_t = String::from(""))]
     default_ad_number: String,
+
+    /// Replace raw MP4 assets with this test assets (it has to be a fragmented MP4 VoD **MEDIA** playlist)
+    /// e.g., https://s3.amazonaws.com/qa.jwplayer.com/hlsjs/muxed-fmp4/hls.m3u8
+    #[clap(long, env, verbatim_doc_comment, default_value_t = String::from(""))]
+    test_asset_url: String,
 }
 
 #[derive(ValueEnum, Clone, Debug, PartialEq)]
@@ -219,7 +245,8 @@ struct ServerConfig {
     insertion_mode: InsertionMode,
     default_ad_duration: u64,
     default_repeating_cycle: u64,
-    default_ad_number: u64
+    default_ad_number: u64,
+    test_asset: Option<TestAsset>,
 }
 
 impl ServerConfig {
@@ -230,7 +257,8 @@ impl ServerConfig {
         insertion_mode: InsertionMode,
         default_ad_duration: u64,
         default_repeating_cycle: u64,
-        default_ad_number: u64
+        default_ad_number: u64,
+        test_asset: Option<TestAsset>,
     ) -> Self {
         Self {
             forward_url,
@@ -239,7 +267,8 @@ impl ServerConfig {
             insertion_mode,
             default_ad_duration,
             default_repeating_cycle,
-            default_ad_number
+            default_ad_number,
+            test_asset,
         }
     }
 
@@ -251,7 +280,8 @@ impl ServerConfig {
             "insertion_mode": self.insertion_mode.to_str(),
             "default_ad_duration": self.default_ad_duration,
             "default_repeating_cycle": self.default_repeating_cycle,
-            "default_ad_number": self.default_ad_number
+            "default_ad_number": self.default_ad_number,
+            "test_asset": self.test_asset.as_ref().map(|asset| asset.to_json()).unwrap_or_else(|| object! {}),
         }
     }
 }
@@ -370,13 +400,16 @@ async fn build_ad_server_url(
     Ok(updated_ad_server_url)
 }
 
-fn make_new_ad_from_linear(linear: &vast4_rs::Linear) -> Ad {
+fn make_new_ad_from_creative(creative: &vast4_rs::Creative) -> Ad {
+    let universal_ad_ids = get_universal_ad_ids_from_creative(creative);
+    let linear = creative.linear.as_ref().unwrap();
     let (duration, urls, trackings) = get_duration_and_media_urls_and_tracking_events_from_linear(linear);
     let url = urls.first().unwrap().clone();
     let ad_id = Uuid::new_v4();
 
     Ad {
         ad_id,
+        universal_ad_ids,
         duration,
         url,
         requested_at: chrono::Local::now(),
@@ -384,67 +417,128 @@ fn make_new_ad_from_linear(linear: &vast4_rs::Linear) -> Ad {
     }
 }
 
+fn make_test_ad_from_creative(creative: &vast4_rs::Creative, test_asset: &TestAsset) -> Ad {
+    let mut ad = make_new_ad_from_creative(creative);
+    ad.url = test_asset.url.as_str().to_string();
+    ad.duration = test_asset.duration;
+
+    // Replace the http with https in urls
+    ad.tracking.iter_mut().for_each(|tracking| {
+        tracking.urls.iter_mut().for_each(|url| {
+            if url.starts_with("http://") {
+                *url = url.replace("http://", "https://");
+            }
+        });
+    });
+
+    ad
+}
+
+fn to_tracking_json(tracking: &Tracking) -> json::JsonValue {
+    if tracking.offset.is_none() {
+        object! {
+            "type": tracking.event.clone(),
+            "urls": tracking.urls.clone(),
+        }
+    } else {
+        object! {
+            "type": tracking.event.clone(),
+            "offset": tracking.offset.as_ref().unwrap().as_str(),
+            "urls": tracking.urls.clone(),
+        }
+    }
+
+}
+
+fn to_ad_asset_json(url: &str, ad: &Ad, start: f64) -> json::JsonValue {
+    object! {
+        "URI": url,
+        "DURATION": ad.duration,
+        "X-AD-CREATIVE-SIGNALING": object! {
+            "version": 2,
+            "type": "slot",
+            "payload": object! {
+                "type": "linear",
+                "start": start,
+                "duration": ad.duration,
+                "identifiers": ad.universal_ad_ids.iter().map(|id| {
+                    object! {
+                        "scheme": id.scheme.as_str(),
+                        "value": id.value.as_str(),
+                    }
+                }).collect::<Vec<_>>(),
+                "tracking": ad.tracking.iter().map(to_tracking_json).collect::<Vec<_>>(),
+            },
+        },
+    }
+}
+
+fn to_asset_list_json_string(assets: Vec<json::JsonValue>, duration: f64) -> String {
+    object! {
+        "ASSETS": assets,
+        "X-AD-CREATIVE-SIGNALING": object! {
+            "version": 2,
+            "type": "pod",
+            "payload": object! {
+                "duration": duration,
+            },
+        },
+    }
+    .pretty(2)
+}
+
 fn wrap_into_assets(
     vast: vast4_rs::Vast,
     req_url: Url,
     interstitial_id: &str,
     user_id: &str,
+    test_asset: &Option<TestAsset>,
     available_ads: web::Data<AvailableAds>,
 ) -> String {
+    let mut start_offset = 0.0;
     // Get all linears (regular MP4s) from the VAST
     let raw_assets = get_all_raw_creatives_from_vast(&vast)
         .iter()
         .map(|creative| {
-            let ad_id = get_id_from_creative(creative);
-            log::info!("Processing raw asset {ad_id}");
+            let asset = if test_asset.is_some() {
+                let ad = make_test_ad_from_creative(creative, &test_asset.as_ref().unwrap());
+                
+                start_offset += ad.duration;
+                to_ad_asset_json(&ad.url, &ad, start_offset)
+            } else {
+                let ad = make_new_ad_from_creative(creative);
+                let id = ad.ad_id;
+                log::info!("Processing raw asset {id}, tracking: {:?}", ad.tracking);
 
-            let ad = make_new_ad_from_linear(creative.linear.as_ref().unwrap());
-            let duration = ad.duration;
-            let id = ad.ad_id;
-            log::debug!("Tracking event {:?}", ad.tracking);
+                // Save the asset for follow-up requests (this applies to not-transcoded ads)
+                available_ads.linears.insert(id, ad.clone());
 
-            // Save the asset for follow-up requests (this applies to not-transcoded ads)
-            available_ads.linears.insert(id, ad.clone());
+                let mut url = req_url.clone();
+                url.query_pairs_mut()
+                    .clear()
+                    .append_pair(HLS_INTERSTITIAL_ID, interstitial_id)
+                    .append_pair(HLS_PRIMARY_ID, user_id)
+                    .append_pair(AD_ID, &id.to_string());
 
-            let mut url = req_url.clone();
-            url.query_pairs_mut()
-                .clear()
-                .append_pair(HLS_INTERSTITIAL_ID, interstitial_id)
-                .append_pair(HLS_PRIMARY_ID, user_id)
-                .append_pair(AD_ID, &id.to_string());
+                start_offset += ad.duration;
+                to_ad_asset_json(&url.as_str(), &ad, start_offset)
+            };
 
-            object! {
-                URI: url.as_str(),
-                DURATION: duration,
-                TRACKING_EVENTS: ad.tracking.iter().map(|tracking| {
-                    object! {
-                        event: tracking.event.as_str(),
-                        uri: tracking.uri.as_str(),
-                    }
-                }).collect::<Vec<_>>(),
-            }
+            asset
         })
         .collect::<Vec<_>>();
 
     let transcoded_assets = get_all_transcoded_creatives_from_vast(&vast)
         .iter()
         .map(|creative| {
-            let ad_id = get_id_from_creative(creative);
-            log::info!("Processing transcoded asset {ad_id}");
+            let ad = make_new_ad_from_creative(creative);
+            let id = ad.ad_id;
+            log::info!("Processing transcoded asset {id}, tracking: {:?}", ad.tracking);
 
-            let ad = make_new_ad_from_linear(creative.linear.as_ref().unwrap());
-            log::debug!("Tracking event {:?}", ad.tracking);
+            let asset = to_ad_asset_json(&ad.url, &ad, start_offset);
+            start_offset += ad.duration;
 
-            object! {
-                URI: ad.url.as_str(),
-                DURATION: ad.duration,
-                TRACKING_EVENTS: ad.tracking.iter().map(|tracking| {
-                    object! {
-                        event: tracking.event.as_str(),
-                        uri: tracking.uri.as_str(),
-                    }
-                }).collect::<Vec<_>>(),
-            }
+            asset
         })
         .collect::<Vec<_>>();
 
@@ -453,10 +547,7 @@ fn wrap_into_assets(
         .chain(transcoded_assets.into_iter())
         .collect::<Vec<_>>();
 
-    object! {
-        ASSETS: assets,
-    }
-    .pretty(2)
+    to_asset_list_json_string(assets, start_offset)
 }
 
 fn replace_absolute_url_with_relative_url(m3u8: &mut MasterPlaylist) {
@@ -708,6 +799,7 @@ async fn handle_interstitials(
     ad_server_url: web::Data<Url>,
     available_ads: web::Data<AvailableAds>,
     available_slots: web::Data<AvailableAdSlots>,
+    config: web::Data<ServerConfig>,
     client: web::Data<Client>,
     user_defined_query_params: web::Data<UserDefinedQueryParams>,
 ) -> Result<HttpResponse, Error> {
@@ -718,7 +810,7 @@ async fn handle_interstitials(
         get_query_param(&req, HLS_INTERSTITIAL_ID).unwrap_or_else(|| "default_ad".to_string());
     let user_id =
         get_query_param(&req, HLS_PRIMARY_ID).unwrap_or_else(|| "default_user".to_string());
-
+    
     // For non-transcoded ads
     if let Some(linear_id) = get_query_param(&req, AD_ID) {
         return handle_raw_asset_request(&interstitial_id, &linear_id, &user_id, available_ads)
@@ -752,8 +844,8 @@ async fn handle_interstitials(
         })
         // Return an empty VAST in case of parsing error
         .unwrap_or_default();
-
-    let response = wrap_into_assets(vast, req_url, &interstitial_id, &user_id, available_ads);
+    // Wrap the VAST into JSON
+    let response = wrap_into_assets(vast, req_url, &interstitial_id, &user_id, &config.test_asset, available_ads);
     log::info!("asset json reply \n{response}");
 
     Ok(HttpResponse::Ok()
@@ -778,7 +870,7 @@ async fn handle_raw_asset_request(
         .ok_or_else(|| error::ErrorNotFound("Ad not found".to_string()))?;
 
     let segment = MediaSegment::builder()
-        .duration(Duration::from_secs(linear.duration))
+        .duration(Duration::from_secs_f64(linear.duration))
         .uri(linear.url.clone())
         .build()
         .unwrap();
@@ -786,7 +878,7 @@ async fn handle_raw_asset_request(
     // Wrap the MP4 in a media playlist
     let m3u8 = MediaPlaylist::builder()
         .media_sequence(0)
-        .target_duration(Duration::from_secs(linear.duration))
+        .target_duration(Duration::from_secs_f64(linear.duration))
         .segments(vec![segment])
         .has_end_list(true)
         .build()
@@ -963,6 +1055,35 @@ fn parse_default_values(args: &CliArguments) -> (u64, u64, u64) {
     )
 }
 
+async fn parse_test_asset_url(config: Arc<ClientConfig>, path: &str) -> Option<TestAsset> {
+    if path.is_empty() {
+        log::warn!("Test asset URL is empty.");
+        return None;
+    }
+
+    log::info!("Parsing test asset URL: {path}");
+    let url = Url::parse(path).ok()?;
+    let client = make_https_client(config);
+    let payload = client.get(url.as_str()).send().await.ok()?.body().await.ok()?;
+    let m3u8 = MediaPlaylist::try_from(std::str::from_utf8(&payload).ok()?).ok()?;
+    if !is_fragmented_mp4_vod_media_playlist(&m3u8) {
+        log::error!("Test asset at {path} is not a valid fragmented MP4 VoD media playlist.");
+        return None;
+    }
+    
+    let duration = m3u8.segments.iter().map(|(_, s)| s.duration.duration().as_secs_f64()).sum();    
+    Some(TestAsset::new(url, duration))
+}
+
+fn make_https_client(config: Arc<rustls::ClientConfig>) -> Client {
+    Client::builder()
+        // Add User-Agent header to make requests
+        .add_default_header((header::USER_AGENT, "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0.1 Safari/605.1.15"))
+        // a "connector" wraps the stream into an encrypted connection
+        .connector(Connector::new().rustls_0_23(config.clone()))
+        .finish()
+}
+
 #[actix_web::main]
 async fn main() -> io::Result<()> {
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
@@ -973,6 +1094,9 @@ async fn main() -> io::Result<()> {
 
     let master_playlist_url =
         Url::parse(&args.master_playlist_url).expect("Invalid master playlist URL");
+
+    let client_tls_config = Arc::new(rustls_config());
+    let test_asset = parse_test_asset_url(client_tls_config.clone(), &args.test_asset_url).await;
 
     // Forward URL is the base URL of the master playlist
     let forward_url = base_url(&master_playlist_url).expect("Invalid forward URL");
@@ -1005,8 +1129,10 @@ async fn main() -> io::Result<()> {
     if args.ad_insertion_mode==InsertionMode::Static && default_repeating_cycle < default_ad_duration {
         log::warn!("Ad duration is greater than the repeating cycle. This may cause issues for live streams.");
     }
+    if let Some(ref asset) = test_asset {
+        log::info!("Test asset URL: {}, duration: {}s", asset.url, asset.duration);
+    }
 
-    let client_tls_config = Arc::new(rustls_config());
     let available_slots = AvailableAdSlots::default();
     let available_ads = AvailableAds::default();
     let server_config = ServerConfig::new(
@@ -1016,7 +1142,8 @@ async fn main() -> io::Result<()> {
         args.ad_insertion_mode,
         default_ad_duration,
         default_repeating_cycle,
-        default_ad_number
+        default_ad_number,
+        test_asset,
     );
     let user_defined_query_params = UserDefinedQueryParams::default();
 
@@ -1024,12 +1151,7 @@ async fn main() -> io::Result<()> {
         let cors = actix_cors::Cors::permissive();
 
         // create https client inside `HttpServer::new` closure to have one per worker thread
-        let client = Client::builder()
-            // Freewheel requires a User-Agent header to make requests
-            .add_default_header((header::USER_AGENT, "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0.1 Safari/605.1.15"))
-            // a "connector" wraps the stream into an encrypted connection
-            .connector(Connector::new().rustls_0_23(Arc::clone(&client_tls_config)))
-            .finish();
+        let client = make_https_client(client_tls_config.clone());
 
         App::new()
             .app_data(web::Data::new(client))
