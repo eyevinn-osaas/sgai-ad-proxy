@@ -764,12 +764,27 @@ fn insert_interstitials(
 // Returns the PDT of the end of the last segment (i.e. "stream now").
 // Falls back to Local::now() if unavailable.
 async fn fetch_stream_now(config: &ServerConfig, client: &Client) -> chrono::DateTime<chrono::Local> {
-    // Derive the media URL: forward_url + dir(master_playlist_path) + /v0/media.m3u8
-    // e.g. forward_url="https://origin/" + "loop/master.m3u8" -> "https://origin/loop/v0/media.m3u8"
-    let media_url = config.master_playlist_path.as_ref().and_then(|p| {
+    // Derive media URL from master_playlist_path if set, otherwise discover it from the master playlist.
+    let media_url = if let Some(p) = config.master_playlist_path.as_ref().filter(|p| !p.is_empty()) {
         let dir = p.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
         config.forward_url.join(&format!("{}/v0/media.m3u8", dir)).ok()
-    }).or_else(|| config.forward_url.join("v0/media.m3u8").ok());
+    } else {
+        // master_playlist_path not set — fetch master playlist and extract first variant's path
+        let master_url = config.forward_url.clone();
+        if let Ok(mut res) = client.get(master_url.as_str()).send().await {
+            if let Ok(payload) = res.body().await {
+                if let Ok(text) = std::str::from_utf8(&payload) {
+                    // Find first non-comment, non-empty line (the first variant URI)
+                    let variant_uri = text.lines()
+                        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+                        .next();
+                    if let Some(uri) = variant_uri {
+                        master_url.join(uri).ok()
+                    } else { None }
+                } else { None }
+            } else { None }
+        } else { None }
+    };
 
     if let Some(url) = media_url {
         log::debug!("Fetching stream PDT from: {url}");
