@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::io;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 use url::Url;
 use uuid::Uuid;
@@ -760,30 +761,37 @@ fn insert_interstitials(
     }
 }
 
-// Fetch the last EXT-X-PROGRAM-DATE-TIME from the first media playlist of the origin.
-// Returns the PDT of the end of the last segment (i.e. "stream now").
-// Falls back to Local::now() if unavailable.
-async fn fetch_stream_now(config: &ServerConfig, client: &Client) -> chrono::DateTime<chrono::Local> {
-    // Derive media URL from master_playlist_path if set, otherwise discover it from the master playlist.
+// Extract the live edge PDT from a media playlist and store it in the shared cache.
+fn update_last_seen_pdt(playlist: &MediaPlaylist, last_seen_pdt: &AtomicI64) {
+    if let Some(seed) = find_program_datetime_tag(playlist) {
+        let pdts = calculate_expected_program_date_time_list(&playlist.segments, seed);
+        if let Some((last_pdt, last_dur)) = pdts.last() {
+            let live_edge = *last_pdt + chrono::Duration::from_std(*last_dur).unwrap_or_default();
+            last_seen_pdt.store(live_edge.timestamp_millis(), Ordering::Relaxed);
+        }
+    }
+}
+
+// Returns the current live edge PDT for ad slot scheduling.
+// Uses the PDT cached from the most recently served media playlist — accurate regardless of
+// origin URL structure or PDT lag vs. wall clock.
+// Falls back to Local::now() only if no playlist has been served yet.
+async fn fetch_stream_now(config: &ServerConfig, client: &Client, last_seen_pdt: &AtomicI64) -> chrono::DateTime<chrono::Local> {
+    let ts = last_seen_pdt.load(Ordering::Relaxed);
+    if ts != 0 {
+        if let Some(dt) = chrono::DateTime::from_timestamp_millis(ts) {
+            let local_dt = dt.with_timezone(&chrono::Local);
+            log::info!("Using cached stream PDT: {local_dt}");
+            return local_dt;
+        }
+    }
+
+    // No cached PDT yet — try to fetch from origin directly (first command before any playlist served)
     let media_url = if let Some(p) = config.master_playlist_path.as_ref().filter(|p| !p.is_empty()) {
         let dir = p.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
         config.forward_url.join(&format!("{}/v0/media.m3u8", dir)).ok()
     } else {
-        // master_playlist_path not set — fetch master playlist and extract first variant's path
-        let master_url = config.forward_url.clone();
-        if let Ok(mut res) = client.get(master_url.as_str()).send().await {
-            if let Ok(payload) = res.body().await {
-                if let Ok(text) = std::str::from_utf8(&payload) {
-                    // Find first non-comment, non-empty line (the first variant URI)
-                    let variant_uri = text.lines()
-                        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
-                        .next();
-                    if let Some(uri) = variant_uri {
-                        master_url.join(uri).ok()
-                    } else { None }
-                } else { None }
-            } else { None }
-        } else { None }
+        None
     };
 
     if let Some(url) = media_url {
@@ -792,21 +800,17 @@ async fn fetch_stream_now(config: &ServerConfig, client: &Client) -> chrono::Dat
             if let Ok(payload) = res.body().await {
                 if let Ok(text) = std::str::from_utf8(&payload) {
                     if let Ok(playlist) = MediaPlaylist::try_from(text) {
-                        // Use first segment's PDT as seed (avoid Local::now() which is wrong for lagging streams)
-                        let first_pdt = find_program_datetime_tag(&playlist);
-                        if let Some(seed) = first_pdt {
-                            let pdts = calculate_expected_program_date_time_list(&playlist.segments, seed);
-                            if let Some((last_pdt, last_dur)) = pdts.last() {
-                                let stream_end = *last_pdt + chrono::Duration::from_std(*last_dur).unwrap_or_default();
-                                log::info!("Stream end PDT (live edge): {stream_end}");
-                                return stream_end;
-                            }
+                        update_last_seen_pdt(&playlist, last_seen_pdt);
+                        let ts = last_seen_pdt.load(Ordering::Relaxed);
+                        if let Some(dt) = chrono::DateTime::from_timestamp_millis(ts) {
+                            return dt.with_timezone(&chrono::Local);
                         }
                     }
                 }
             }
         }
     }
+
     log::warn!("Could not fetch stream PDT; falling back to wall clock");
     chrono::Local::now()
 }
@@ -817,6 +821,7 @@ async fn handle_commands(
     config: web::Data<ServerConfig>,
     available_slots: web::Data<AvailableAdSlots>,
     client: web::Data<Client>,
+    last_seen_pdt: web::Data<AtomicI64>,
 ) -> Result<HttpResponse, Error> {
     if config.insertion_mode == InsertionMode::Static {
         return Ok(HttpResponse::BadRequest().body("Ad insertion is not supported in static mode."));
@@ -825,7 +830,7 @@ async fn handle_commands(
     let query = req.uri().query().unwrap_or_default();
     match InsertionCommand::from_query(query) {
         Ok(command) => {
-            let stream_now = fetch_stream_now(&config, &client).await;
+            let stream_now = fetch_stream_now(&config, &client, &last_seen_pdt).await;
             let start_time = stream_now + chrono::Duration::seconds(command.in_sec as i64);
             let index = available_slots.0.len() as u64;
             let ad_slot = AdSlot {
@@ -967,6 +972,7 @@ async fn handle_media_stream(
     config: web::Data<ServerConfig>,
     client: web::Data<Client>,
     user_defined_query_params: web::Data<UserDefinedQueryParams>,
+    last_seen_pdt: web::Data<AtomicI64>,
 ) -> Result<HttpResponse, Error> {
     log::trace!("Received request \n{:?}", req);
     let request_type = get_request_type(&req, &config);
@@ -976,10 +982,10 @@ async fn handle_media_stream(
             handle_master_playlist(req, config, client, user_defined_query_params).await
         }
         RequestType::MediaPlayList => {
-            handle_media_playlist(req, available_slots, config, client).await
+            handle_media_playlist(req, available_slots, config, client, last_seen_pdt).await
         }
         RequestType::Playlist => {
-            handle_playlist(req, available_slots, config, client, user_defined_query_params).await
+            handle_playlist(req, available_slots, config, client, user_defined_query_params, last_seen_pdt).await
         }
         RequestType::Segment => handle_segment(req, config, client).await,
         RequestType::Other => Ok(HttpResponse::NotFound().finish()),
@@ -1044,6 +1050,7 @@ async fn handle_media_playlist(
     available_slots: web::Data<AvailableAdSlots>,
     config: web::Data<ServerConfig>,
     client: web::Data<Client>,
+    last_seen_pdt: web::Data<AtomicI64>,
 ) -> Result<HttpResponse, Error> {
     let new_url = build_forward_url(&req, &config.forward_url);
 
@@ -1070,7 +1077,7 @@ async fn handle_media_playlist(
     }
 
     let playlist = playlist.unwrap();
-    handle_media_playlist_content(playlist, available_slots, config).await
+    handle_media_playlist_content(playlist, available_slots, config, last_seen_pdt).await
 }
 
 async fn handle_master_playlist_content(
@@ -1101,7 +1108,9 @@ async fn handle_media_playlist_content(
     mut playlist: MediaPlaylist<'_>,
     available_slots: web::Data<AvailableAdSlots>,
     config: web::Data<ServerConfig>,
+    last_seen_pdt: web::Data<AtomicI64>,
 ) -> Result<HttpResponse, Error> {
+    update_last_seen_pdt(&playlist, &last_seen_pdt);
     insert_interstitials(&mut playlist, &config, available_slots);
     log::debug!("media playlist \n{playlist}");
 
@@ -1116,6 +1125,7 @@ async fn handle_playlist(
     config: web::Data<ServerConfig>,
     client: web::Data<Client>,
     user_defined_query_params: web::Data<UserDefinedQueryParams>,
+    last_seen_pdt: web::Data<AtomicI64>,
 ) -> Result<HttpResponse, Error> {
     let new_url = build_forward_url(&req, &config.forward_url);
 
@@ -1135,7 +1145,7 @@ async fn handle_playlist(
 
     // Otherwise handle as media playlist
     if let Ok(media) = MediaPlaylist::try_from(m3u8) {
-        return handle_media_playlist_content(media, available_slots, config).await;
+        return handle_media_playlist_content(media, available_slots, config, last_seen_pdt).await;
     }
 
     // If neither parsing works, return the original content
@@ -1329,6 +1339,7 @@ async fn main() -> io::Result<()> {
 
     let available_slots = AvailableAdSlots::default();
     let available_ads = AvailableAds::default();
+    let last_seen_pdt = web::Data::new(AtomicI64::new(0));
     let server_config = ServerConfig::new(
         forward_url,
         interstitials_address,
@@ -1354,6 +1365,7 @@ async fn main() -> io::Result<()> {
             .app_data(web::Data::new(server_config.clone()))
             .app_data(web::Data::new(ad_server_url.clone()))
             .app_data(web::Data::new(user_defined_query_params.clone()))
+            .app_data(last_seen_pdt.clone())
             .wrap(middleware::Logger::default())
             .wrap(cors)
             .route(COMMAND_PREFIX, web::get().to(handle_commands))
