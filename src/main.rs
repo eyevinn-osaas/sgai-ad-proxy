@@ -759,6 +759,7 @@ fn insert_interstitials(
             segments.get_mut(index).unwrap().date_range = Some(date_range);
         }
     }
+
 }
 
 // Extract the live edge PDT from a media playlist and store it in the shared cache.
@@ -777,32 +778,19 @@ fn update_last_seen_pdt(playlist: &MediaPlaylist, last_seen_pdt: &AtomicI64) {
 // origin URL structure or PDT lag vs. wall clock.
 // Falls back to Local::now() only if no playlist has been served yet.
 async fn fetch_stream_now(config: &ServerConfig, client: &Client, last_seen_pdt: &AtomicI64) -> chrono::DateTime<chrono::Local> {
-    let ts = last_seen_pdt.load(Ordering::Relaxed);
-    if ts != 0 {
-        if let Some(dt) = chrono::DateTime::from_timestamp_millis(ts) {
-            let local_dt = dt.with_timezone(&chrono::Local);
-            log::info!("Using cached stream PDT: {local_dt}");
-            return local_dt;
-        }
-    }
-
-    // No cached PDT yet — try to fetch from origin directly (first command before any playlist served)
-    let media_url = if let Some(p) = config.master_playlist_path.as_ref().filter(|p| !p.is_empty()) {
-        let dir = p.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
-        config.forward_url.join(&format!("{}/v0/media.m3u8", dir)).ok()
-    } else {
-        None
-    };
-
-    if let Some(url) = media_url {
-        log::debug!("Fetching stream PDT from: {url}");
-        if let Ok(mut res) = client.get(url.as_str()).send().await {
+    // Always fetch a fresh media playlist from origin to get the current live edge PDT.
+    // The cached value is stale if the player hasn't polled recently, causing slots to be
+    // scheduled in the past relative to the live edge.
+    if let Some(media_url) = resolve_media_playlist_url(config, client).await {
+        log::debug!("Fetching live edge PDT from origin: {media_url}");
+        if let Ok(mut res) = client.get(media_url.as_str()).send().await {
             if let Ok(payload) = res.body().await {
                 if let Ok(text) = std::str::from_utf8(&payload) {
                     if let Ok(playlist) = MediaPlaylist::try_from(text) {
                         update_last_seen_pdt(&playlist, last_seen_pdt);
                         let ts = last_seen_pdt.load(Ordering::Relaxed);
                         if let Some(dt) = chrono::DateTime::from_timestamp_millis(ts) {
+                            log::info!("Live edge PDT from origin: {}", dt.with_timezone(&chrono::Local));
                             return dt.with_timezone(&chrono::Local);
                         }
                     }
@@ -811,8 +799,46 @@ async fn fetch_stream_now(config: &ServerConfig, client: &Client, last_seen_pdt:
         }
     }
 
-    log::warn!("Could not fetch stream PDT; falling back to wall clock");
+    // Fall back to cached PDT if origin fetch failed
+    let ts = last_seen_pdt.load(Ordering::Relaxed);
+    if ts != 0 {
+        if let Some(dt) = chrono::DateTime::from_timestamp_millis(ts) {
+            let local_dt = dt.with_timezone(&chrono::Local);
+            log::warn!("Origin fetch failed; using cached stream PDT: {local_dt}");
+            return local_dt;
+        }
+    }
+
+    log::warn!("Could not determine stream PDT; falling back to wall clock");
     chrono::Local::now()
+}
+
+// Resolves a usable media playlist URL from the configured origin.
+// For master-playlist mode: fetches the master, picks the first variant stream.
+// For origin-host mode: returns None (no known playlist path).
+async fn resolve_media_playlist_url(config: &ServerConfig, client: &Client) -> Option<url::Url> {
+    let master_path = config.master_playlist_path.as_ref().filter(|p| !p.is_empty())?;
+    let master_url = config.forward_url.join(master_path).ok()?;
+
+    let mut res = client.get(master_url.as_str()).send().await.ok()?;
+    let payload = res.body().await.ok()?;
+    let text = std::str::from_utf8(&payload).ok()?;
+
+    // Try to parse as a master playlist and pick the first variant
+    if let Ok(master) = MasterPlaylist::try_from(text) {
+        if let Some(variant) = master.variant_streams.iter().next() {
+            if let VariantStream::ExtXStreamInf { uri, .. } = variant {
+                return master_url.join(uri).ok();
+            }
+        }
+    }
+
+    // Already a media playlist (single-rendition stream) — use it directly
+    if MediaPlaylist::try_from(text).is_ok() {
+        return Some(master_url);
+    }
+
+    None
 }
 
 // Take http get requests and parse the query string into commands
@@ -1038,11 +1064,35 @@ async fn handle_master_playlist(
 
     let mut playlist = playlist.unwrap();
     replace_absolute_url_with_relative_url(&mut playlist);
-    log::debug!("master playlist \n{playlist}");
+    let playlist_str = playlist.to_string();
+
+    // Prepend the request's directory path to any relative variant URIs.
+    // Needed when the origin returns relative URIs (e.g. "v0/media.m3u8") and the
+    // master playlist is served under a sub-path (e.g. /loop/master.m3u8).
+    let req_path = req.uri().path();
+    let base_dir = req_path.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
+    let output = if !base_dir.is_empty() {
+        let mut result = String::with_capacity(playlist_str.len() + 64);
+        let mut prev_was_stream_inf = false;
+        for line in playlist_str.lines() {
+            if prev_was_stream_inf && !line.starts_with('#') && !line.starts_with("http") && !line.starts_with('/') {
+                result.push_str(base_dir);
+                result.push('/');
+            }
+            result.push_str(line);
+            result.push('\n');
+            prev_was_stream_inf = line.starts_with("#EXT-X-STREAM-INF");
+        }
+        result
+    } else {
+        playlist_str
+    };
+
+    log::debug!("master playlist \n{output}");
 
     Ok(HttpResponse::Ok()
         .content_type(HLS_PLAYLIST_CONTENT_TYPE)
-        .body(playlist.to_string()))
+        .body(output))
 }
 
 async fn handle_media_playlist(
@@ -1097,11 +1147,35 @@ async fn handle_master_playlist_content(
     }
 
     replace_absolute_url_with_relative_url(&mut playlist);
-    log::debug!("master playlist \n{playlist}");
+    let playlist_str = playlist.to_string();
+
+    // Prepend the request's directory path to any still-relative variant URIs.
+    // Needed when the origin returns relative URIs (e.g. "v0/media.m3u8") and the
+    // master playlist is served under a sub-path (e.g. /loop/master.m3u8).
+    let req_path = req.uri().path();
+    let base_dir = req_path.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
+    let output = if !base_dir.is_empty() {
+        let mut result = String::with_capacity(playlist_str.len() + 64);
+        let mut prev_was_stream_inf = false;
+        for line in playlist_str.lines() {
+            if prev_was_stream_inf && !line.starts_with('#') && !line.starts_with("http") && !line.starts_with('/') {
+                result.push_str(base_dir);
+                result.push('/');
+            }
+            result.push_str(line);
+            result.push('\n');
+            prev_was_stream_inf = line.starts_with("#EXT-X-STREAM-INF");
+        }
+        result
+    } else {
+        playlist_str
+    };
+
+    log::debug!("master playlist \n{output}");
 
     Ok(HttpResponse::Ok()
         .content_type(HLS_PLAYLIST_CONTENT_TYPE)
-        .body(playlist.to_string()))
+        .body(output))
 }
 
 async fn handle_media_playlist_content(

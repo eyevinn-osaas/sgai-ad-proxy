@@ -10,11 +10,11 @@ if [ -z "$ORIGIN_HOST" ] && [ -z "$ORIGIN_URL" ]; then
   exit 1
 fi
 
-# Build origin argument: prefer ORIGIN_HOST (--origin-host) over ORIGIN_URL (positional)
-if [ -n "$ORIGIN_HOST" ]; then
-  ORIGIN_ARG="--origin-host ${ORIGIN_HOST}"
-else
+# Build origin argument: prefer ORIGIN_URL (full playlist URL) over ORIGIN_HOST (base only)
+if [ -n "$ORIGIN_URL" ]; then
   ORIGIN_ARG="${ORIGIN_URL}"
+else
+  ORIGIN_ARG="--origin-host ${ORIGIN_HOST}"
 fi
 
 # Allow full override of interstitials address (e.g. http:// for local dev)
