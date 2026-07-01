@@ -186,8 +186,9 @@ struct CliArguments {
 
     /// Ad server endpoint (protocol://ip:port/path)
     /// It should be a VAST4.0/4.1 XML compatible endpoint
-    #[clap(verbatim_doc_comment)]
-    ad_server_endpoint: String,
+    /// Not required when --test-asset-url is set
+    #[clap(required_unless_present = "test_asset_url", verbatim_doc_comment)]
+    ad_server_endpoint: Option<String>,
 
     /// HLS stream address (protocol://ip:port/path)
     /// (e.g., http://localhost/test/master.m3u8)
@@ -916,6 +917,16 @@ async fn handle_interstitials(
     }
     log::info!("Received interstitial request from user {user_id} for slot {interstitial_id}");
 
+    // If a test asset is configured, skip VAST entirely and serve it directly.
+    if let Some(test_asset) = &config.test_asset {
+        let asset = to_ad_asset_json(&test_asset.url.as_str(), &Ad { duration: test_asset.duration, ..Default::default() }, test_asset.duration);
+        let response = to_asset_list_json_string(vec![asset], test_asset.duration);
+        log::info!("Serving test asset directly (no VAST): {response}");
+        return Ok(HttpResponse::Ok()
+            .content_type(mime::APPLICATION_JSON)
+            .body(response));
+    }
+
     let ad_url = build_ad_server_url(
         &ad_server_url,
         &interstitial_id,
@@ -1318,13 +1329,30 @@ async fn parse_test_asset_url(config: Arc<ClientConfig>, path: &str) -> Option<T
     let url = Url::parse(path).ok()?;
     let client = make_https_client(config);
     let payload = client.get(url.as_str()).send().await.ok()?.body().await.ok()?;
-    let m3u8 = MediaPlaylist::try_from(std::str::from_utf8(&payload).ok()?).ok()?;
+    let text = std::str::from_utf8(&payload).ok()?;
+
+    // If the URL points to a master playlist, resolve the first variant to a media playlist.
+    let (media_url, media_text) = if let Ok(master) = MasterPlaylist::try_from(text) {
+        let variant_uri = master.variant_streams.iter().find_map(|v| {
+            if let VariantStream::ExtXStreamInf { uri, .. } = v { Some(uri.as_ref()) } else { None }
+        })?;
+        let media_url = url.join(variant_uri).ok()?;
+        log::info!("Test asset is a master playlist; using first variant: {media_url}");
+        let payload2 = client.get(media_url.as_str()).send().await.ok()?.body().await.ok()?;
+        let text2 = String::from_utf8(payload2.to_vec()).ok()?;
+        (media_url, text2)
+    } else {
+        (url.clone(), text.to_string())
+    };
+
+    let m3u8 = MediaPlaylist::try_from(media_text.as_str()).ok()?;
     if !is_fragmented_mp4_vod_media_playlist(&m3u8) {
-        log::error!("Test asset at {path} is not a valid fragmented MP4 VoD media playlist.");
+        log::error!("Test asset at {media_url} is not a valid fragmented MP4 VoD media playlist.");
         return None;
     }
-    
-    let duration = m3u8.segments.iter().map(|(_, s)| s.duration.duration().as_secs()).sum();    
+
+    let duration = m3u8.segments.iter().map(|(_, s)| s.duration.duration().as_secs()).sum();
+    // Use the original (master) URL so the player can pick its own variant.
     Some(TestAsset::new(url, duration))
 }
 
@@ -1377,12 +1405,16 @@ async fn main() -> io::Result<()> {
     let interstitials_address =
         Url::parse(&interstitials_address).expect("Invalid interstitials address");
 
-    let ad_server_url = Url::parse(&args.ad_server_endpoint).unwrap();
+    let ad_server_url = args.ad_server_endpoint
+        .as_deref()
+        .map(|s| Url::parse(s).expect("Invalid ad server URL"))
+        .unwrap_or_else(|| Url::parse("http://localhost/no-vast").unwrap());
 
     log::info!("Program started at: {:?}", *START_TIME);
     log::info!("Starting HTTP server at {listen_url}, forwarding to {forward_url}, interstitials' base URL: {interstitials_address}");
     log::info!(
-        "Ad server endpoint: {ad_server_url}, {:?} insertion",
+        "Ad server endpoint: {}, {:?} insertion",
+        args.ad_server_endpoint.as_deref().unwrap_or("none (test asset mode)"),
         args.ad_insertion_mode.to_str()
     );
     log::info!("Default ad duration: {}s, repeating cycle: {}s, ad number: {}",
