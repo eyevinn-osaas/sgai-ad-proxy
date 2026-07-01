@@ -1,7 +1,7 @@
 #!/bin/sh
 
-if [ -z "$VAST_ENDPOINT" ]; then
-  echo "VAST_ENDPOINT is required"
+if [ -z "$VAST_ENDPOINT" ] && [ -z "$TEST_ASSET_URL" ]; then
+  echo "Either VAST_ENDPOINT or TEST_ASSET_URL is required"
   exit 1
 fi
 
@@ -22,8 +22,19 @@ if [ -z "$INTERSTITIALS_ADDRESS" ]; then
   INTERSTITIALS_ADDRESS="https://${OSC_HOSTNAME}"
 fi
 
+VAST_ARG=""
+if [ -n "$VAST_ENDPOINT" ]; then
+  VAST_ARG="${VAST_ENDPOINT}"
+fi
+
+TEST_ASSET_ARG=""
+if [ -n "$TEST_ASSET_URL" ]; then
+  TEST_ASSET_ARG="--test-asset-url ${TEST_ASSET_URL}"
+fi
+
 /app/ad_proxy 0.0.0.0 ${PORT:-8080} \
-  ${VAST_ENDPOINT} \
+  ${VAST_ARG} \
   ${ORIGIN_ARG} \
   --ad-insertion-mode ${INSERTION_MODE:-static} \
-  --interstitials-address ${INTERSTITIALS_ADDRESS}
+  --interstitials-address ${INTERSTITIALS_ADDRESS} \
+  ${TEST_ASSET_ARG}
